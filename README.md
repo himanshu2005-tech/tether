@@ -157,7 +157,7 @@ sequenceDiagram
     Supplier->>App: open tender
     App->>DB: read past contract prices
     App->>G: bidGuidance(tender, prices)
-    G-->>App: tip; range computed locally
+    G-->>App: proposal tip (price range computed locally)
     Supplier->>App: submit bid
     App->>DB: add bids/{id}, tender.bidCount +1
 
@@ -170,7 +170,7 @@ sequenceDiagram
     Buyer->>App: Award contract
     App->>G: extractTerms(contract text)
     G-->>App: { extraChargesAllowed, paymentTermsDays, ... }
-    App->>DB: add contracts/{id}; batch: tender awarded, bids awarded/rejected
+    App->>DB: add contracts/{id}, then mark tender awarded and bids awarded or rejected
 
     Supplier->>App: Raise invoice (qty, price, extras)
     App->>DB: read buyer's past invoices and both profiles
