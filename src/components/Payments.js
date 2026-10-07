@@ -54,13 +54,13 @@ export default function Payments() {
   };
 
   return (
-    <div className="page-container">
+    <div className="page-container" style={{ maxWidth: '600px', margin: '0 auto', width: '100%', paddingTop: '2rem' }}>
 
       {/* Header */}
-      <div style={{ marginBottom: '2.5rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
+      <div style={{ marginBottom: '2.5rem', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
           <Receipt size={28} />
-          <h2 style={{ fontSize: '2rem', fontWeight: '600' }}>Payment Tracking</h2>
+          <h2 style={{ fontSize: '2.5rem', fontWeight: '700' }}>Payment Tracking</h2>
         </div>
         <p style={{ color: 'var(--text-secondary)' }}>
           Enter a Payment ID to verify and retrieve a receipt for any completed transaction.
@@ -68,7 +68,7 @@ export default function Payments() {
       </div>
 
       {/* Search Form */}
-      <form onSubmit={handleSearch} style={{ display: 'flex', gap: '0.75rem', marginBottom: '2.5rem', maxWidth: '560px' }}>
+      <form onSubmit={handleSearch} style={{ display: 'flex', alignItems: 'stretch', gap: '0.75rem', marginBottom: '2.5rem', width: '100%' }}>
         <div style={{ flex: 1, position: 'relative' }}>
           <Search
             size={18}
@@ -93,7 +93,7 @@ export default function Payments() {
           type="submit"
           disabled={isSearching}
           className="btn-primary"
-          style={{ padding: '0 1.75rem', whiteSpace: 'nowrap' }}
+          style={{ padding: '0 1.75rem', whiteSpace: 'nowrap', margin: 0 }}
         >
           {isSearching ? <span className="spinner"></span> : 'Verify'}
         </button>
@@ -103,6 +103,7 @@ export default function Payments() {
       {hasSearched && notFound && !isSearching && (
         <div style={{
           maxWidth: '480px',
+          margin: '0 auto',
           border: '1px solid var(--border-color)',
           borderRadius: '1rem',
           padding: '2.5rem',
@@ -124,7 +125,7 @@ export default function Payments() {
 
       {/* Receipt Card */}
       {receipt && (
-        <div style={{ maxWidth: '480px' }}>
+        <div style={{ maxWidth: '480px', margin: '0 auto' }}>
           {/* Verified Header */}
           <div style={{
             border: '1px solid var(--border-color)',

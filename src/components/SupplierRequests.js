@@ -94,7 +94,7 @@ export default function SupplierRequests() {
   return (
     <div className="page-container">
       <div className="page-header" style={{ marginBottom: '2rem' }}>
-        <h2 style={{ fontSize: '2rem', fontWeight: '600' }}>Incoming Requests</h2>
+        <h2 style={{ fontSize: '2.5rem', fontWeight: '700' }}>Incoming Requests</h2>
         <p style={{ color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
           Review and send bills to consumers for their orders.
         </p>

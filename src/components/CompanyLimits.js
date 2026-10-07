@@ -74,7 +74,7 @@ export default function CompanyLimits() {
   return (
     <div className="page-container">
       <div className="page-header" style={{ marginBottom: '2rem' }}>
-        <h2 style={{ fontSize: '2rem', fontWeight: '600' }}>Company Limits</h2>
+        <h2 style={{ fontSize: '2.5rem', fontWeight: '700' }}>Company Limits</h2>
         <p style={{ color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
           Set the maximum price per unit you are willing to spend for these products. 
           We'll warn you if a supplier's price exceeds your limit.

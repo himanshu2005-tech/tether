@@ -15,6 +15,11 @@ import CompanyLimits from './components/CompanyLimits';
 import SupplierRequests from './components/SupplierRequests';
 import MyOrders from './components/MyOrders';
 import Payments from './components/Payments';
+import Checkout from './components/Checkout';
+import Tenders from './components/Tenders';
+import TenderDetail from './components/TenderDetail';
+import Contracts from './components/Contracts';
+import RiskCenter from './components/RiskCenter';
 
 import AuthLayout from './components/AuthLayout';
 
@@ -87,6 +92,46 @@ function App() {
                 element={
                   <ProtectedRoute>
                     <Payments />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/checkout/:billId"
+                element={
+                  <ProtectedRoute>
+                    <Checkout />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/tenders"
+                element={
+                  <ProtectedRoute>
+                    <Tenders />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/tenders/:tenderId"
+                element={
+                  <ProtectedRoute>
+                    <TenderDetail />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/contracts"
+                element={
+                  <ProtectedRoute>
+                    <Contracts />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/risk"
+                element={
+                  <ProtectedRoute>
+                    <RiskCenter />
                   </ProtectedRoute>
                 }
               />

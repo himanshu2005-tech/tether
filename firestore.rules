@@ -1,0 +1,61 @@
+rules_version = '2';
+
+// Deploy with: firebase deploy --only firestore:rules  (or paste into Firebase Console → Firestore → Rules)
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function role() { return get(/databases/$(database)/documents/users/$(uid())).data.role; }
+    function changes(fields) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(fields); }
+
+    match /users/{userId} {
+      // Profiles are readable by signed-in users so the AI relationship check can compare them
+      allow read: if signedIn();
+      allow write: if signedIn() && uid() == userId;
+    }
+
+    match /tenders/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn() && role() == 'consumer' && request.resource.data.buyerId == uid();
+      // Buyer manages the tender; suppliers may only bump the bid counter
+      allow update: if signedIn() && (resource.data.buyerId == uid() || (role() == 'supplier' && changes(['bidCount'])));
+    }
+
+    match /bids/{id} {
+      allow read: if signedIn() && (resource.data.supplierId == uid() || resource.data.buyerId == uid());
+      allow create: if signedIn() && role() == 'supplier' && request.resource.data.supplierId == uid();
+      // Only the buyer changes bid status (award / reject)
+      allow update: if signedIn() && resource.data.buyerId == uid() && changes(['status']);
+    }
+
+    match /contracts/{id} {
+      allow read: if signedIn() && (resource.data.buyerId == uid() || resource.data.supplierId == uid());
+      allow create: if signedIn() && request.resource.data.buyerId == uid();
+      // Supplier can only advance the invoiced totals
+      allow update: if signedIn() && (resource.data.buyerId == uid()
+        || (resource.data.supplierId == uid() && changes(['quantityInvoiced', 'amountInvoiced'])));
+    }
+
+    match /bills/{id} {
+      allow read: if signedIn() && (resource.data.consumerId == uid() || resource.data.supplierId == uid());
+      allow create: if signedIn() && request.resource.data.supplierId == uid();
+      // Only the buyer pays, approves or rejects. A supplier cannot clear their own flagged invoice.
+      allow update: if signedIn() && resource.data.consumerId == uid();
+    }
+
+    match /requests/{id} {
+      allow read, update: if signedIn() && (resource.data.consumerId == uid() || resource.data.supplierId == uid());
+      allow create: if signedIn() && request.resource.data.consumerId == uid();
+    }
+
+    match /products/{id} {
+      allow read: if signedIn();
+      allow write: if signedIn() && (resource == null ? request.resource.data.supplierId == uid() : resource.data.supplierId == uid());
+    }
+
+    match /ratings/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.consumerId == uid();
+    }
+  }
+}

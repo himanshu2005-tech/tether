@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Outlet, Link, useNavigate } from 'react-router-dom';
+import { Outlet, Link, NavLink, useNavigate } from 'react-router-dom';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { Moon, Sun } from 'lucide-react';
@@ -14,6 +14,30 @@ export default function Layout() {
   const dropdownRef = useRef(null);
   const navigate = useNavigate();
   const [pendingRequestsCount, setPendingRequestsCount] = useState(0);
+  const [pendingReviewCount, setPendingReviewCount] = useState(0);
+
+  // Buyers: count invoices the AI flagged that still need a decision
+  useEffect(() => {
+    if (!currentUser || userData?.role !== 'consumer') return;
+    const q = query(collection(db, 'bills'), where('consumerId', '==', currentUser.uid));
+    return onSnapshot(q, (snapshot) => {
+      setPendingReviewCount(snapshot.docs.filter(d => d.data().reviewStatus === 'pending_review').length);
+    });
+  }, [currentUser, userData]);
+
+  const navItems = userData?.role === 'consumer'
+    ? [
+        { to: '/tenders', label: 'Tenders' },
+        { to: '/contracts', label: 'Contracts' },
+        { to: '/my-orders', label: 'Invoices' },
+        { to: '/risk', label: 'Risk Center', count: pendingReviewCount }
+      ]
+    : userData?.role === 'supplier'
+    ? [
+        { to: '/tenders', label: 'Tenders' },
+        { to: '/contracts', label: 'Contracts' }
+      ]
+    : [];
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -69,6 +93,16 @@ export default function Layout() {
         <Link to="/" className="navbar-brand">
           Tether
         </Link>
+        {currentUser && navItems.length > 0 && (
+          <div className="nav-links">
+            {navItems.map(item => (
+              <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+                {item.label}
+                {item.count > 0 && <span className="nav-count">{item.count}</span>}
+              </NavLink>
+            ))}
+          </div>
+        )}
         <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
           
           <button 
@@ -82,20 +116,9 @@ export default function Layout() {
 
           {currentUser && (
             <div className="profile-section" ref={dropdownRef}>
-              {userData && userData.role && (
-                <span style={{ 
-                  fontSize: '0.875rem', 
-                  fontWeight: '600',
-                  color: 'var(--text-primary)',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.05em'
-                }}>
-                  {userData.role}
-                </span>
-              )}
               
               <button 
-                className="avatar-btn" 
+                className="avatar-btn" title="Your account: profile and sign out" 
                 onClick={() => setDropdownOpen(!dropdownOpen)}
               >
                 {getInitials()}
@@ -110,6 +133,7 @@ export default function Layout() {
                     Profile
                   </button>
                   
+
                   {userData && userData.role === 'supplier' && (
                     <>
                       <button 

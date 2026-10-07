@@ -3,6 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { db } from '../firebase';
 import { doc, updateDoc } from 'firebase/firestore';
 import { User, Mail, Building, Shield, Edit2, Check, X } from 'lucide-react';
+import { InfoTip } from './Guide';
 
 export default function Profile() {
   const { currentUser, userData, setUserData } = useAuth();
@@ -157,7 +158,7 @@ export default function Profile() {
                 </button>
               </>
             ) : (
-              <button onClick={handleEditName} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', padding: '0.25rem' }}>
+              <button onClick={handleEditName} title="Edit company name" aria-label="Edit company name" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', padding: '0.25rem' }}>
                 <Edit2 size={15} />
               </button>
             )}
@@ -169,11 +170,65 @@ export default function Profile() {
         <InfoRow icon={User} label="Role" value={userData?.role ? userData.role.charAt(0).toUpperCase() + userData.role.slice(1) : '—'} />
       </div>
 
+      <BusinessDetails currentUser={currentUser} userData={userData} setUserData={setUserData} />
+
       {saved && (
         <div style={{ marginTop: '1.5rem', padding: '0.75rem 1rem', borderRadius: '0.5rem', border: '1px solid var(--border-color)', color: 'var(--text-primary)', fontSize: '0.875rem', fontWeight: '500' }}>
           ✓ Company name updated successfully
         </div>
       )}
     </div>
+  );
+}
+
+const BUSINESS_FIELDS = [
+  { key: 'address', label: 'Registered address', placeholder: '12 MG Road, Chennai 600001' },
+  { key: 'phone', label: 'Phone', placeholder: '+91 98xxxxxxxx' },
+  { key: 'gstin', tip: 'gstin', label: 'GSTIN', placeholder: '33ABCDE1234F1Z5' },
+  { key: 'bankAccount', label: 'Bank account number', placeholder: 'Used only for matching, never shown to others' },
+  { key: 'keyPeople', tip: 'keyPeople', label: 'Directors / key people', placeholder: 'Comma separated, e.g. Ravi Kumar, Anita Rao' }
+];
+
+// Used by the AI relationship check: a supplier that shares an address, bank account,
+// phone, GSTIN or director with the buyer (or with a rival bidder) is flagged
+function BusinessDetails({ currentUser, userData, setUserData }) {
+  const [form, setForm] = useState(() => Object.fromEntries(BUSINESS_FIELDS.map(f => [f.key, userData?.[f.key] || ''])));
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    setMessage('');
+    try {
+      const data = Object.fromEntries(Object.entries(form).map(([k, v]) => [k, v.trim()]));
+      await updateDoc(doc(db, 'users', currentUser.uid), data);
+      if (setUserData) setUserData(prev => ({ ...prev, ...data }));
+      setMessage('Business details saved.');
+    } catch (err) {
+      setMessage('Failed to save: ' + err.message);
+    }
+    setSaving(false);
+  };
+
+  return (
+    <form onSubmit={handleSave} className="bid-card" style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+      <div>
+        <h3 style={{ fontWeight: 600 }}>Business details<InfoTip term="businessDetails" /></h3>
+        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+          Optional, but it lets Tether AI detect hidden relationships, for example a supplier registered at the same address or
+          bank account as a buyer's company or as a rival bidder. These details are only used for matching.
+        </p>
+      </div>
+      {BUSINESS_FIELDS.map(f => (
+        <div className="form-group" key={f.key}>
+          <label className="form-label" htmlFor={`bd-${f.key}`}>{f.label}{f.tip && <InfoTip term={f.tip} label={f.label} />}</label>
+          <input id={`bd-${f.key}`} className="form-input" placeholder={f.placeholder}
+            value={form[f.key]} onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))} />
+        </div>
+      ))}
+      <button className="btn-primary" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save business details'}</button>
+      {message && <p style={{ fontSize: '0.85rem' }}>{message}</p>}
+    </form>
   );
 }

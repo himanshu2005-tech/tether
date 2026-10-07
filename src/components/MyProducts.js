@@ -80,7 +80,7 @@ export default function MyProducts() {
   return (
     <div className="page-container">
       <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
-        <h2 style={{ fontSize: '2rem', fontWeight: '600' }}>My Products</h2>
+        <h2 style={{ fontSize: '2.5rem', fontWeight: '700' }}>My Products</h2>
         <button className="btn-primary" onClick={() => setShowAddForm(!showAddForm)} style={{ marginTop: 0 }}>
           {showAddForm ? 'Cancel' : '+ Add Product'}
         </button>
@@ -94,13 +94,13 @@ export default function MyProducts() {
           <form onSubmit={handleAddProduct} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             
             <div className="form-group">
-              <label className="form-label" htmlFor="product">Product</label>
-              <select id="product" className="form-input" ref={productRef} required>
-                <option value="">Select a product...</option>
+              <label className="form-label" htmlFor="product">Product Name</label>
+              <input type="text" id="product" className="form-input" ref={productRef} list="predefined-products" placeholder="e.g. Custom Microchips" required />
+              <datalist id="predefined-products">
                 {PREDEFINED_PRODUCTS.map(p => (
-                  <option key={p} value={p}>{p}</option>
+                  <option key={p} value={p} />
                 ))}
-              </select>
+              </datalist>
             </div>
 
             <div style={{ display: 'flex', gap: '1rem' }}>
