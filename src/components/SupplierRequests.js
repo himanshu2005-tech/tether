@@ -1,62 +1,45 @@
 import React, { useState, useEffect } from 'react';
+import { collection, query, where, onSnapshot, doc, updateDoc, addDoc, serverTimestamp } from 'firebase/firestore';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../firebase';
-import { collection, query, where, onSnapshot, doc, updateDoc, addDoc, serverTimestamp } from 'firebase/firestore';
+import { PageHeader } from './Guide';
+
+const money = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
 export default function SupplierRequests() {
   const { currentUser } = useAuth();
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
-
-  // Map of reqId -> extra charge input value
   const [extraCharges, setExtraCharges] = useState({});
   const [submitting, setSubmitting] = useState({});
 
   useEffect(() => {
     if (!currentUser) return;
-
-    const q = query(
-      collection(db, 'requests'),
-      where('supplierId', '==', currentUser.uid)
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      let fetched = [];
-      snapshot.forEach((docSnap) => {
-        fetched.push({ id: docSnap.id, ...docSnap.data() });
-      });
-      fetched = fetched.filter(req => req.status === 'pending' || req.status === 'active');
-      fetched.sort((a, b) => b.createdAt?.toMillis() - a.createdAt?.toMillis());
-      setRequests(fetched);
+    const q = query(collection(db, 'requests'), where('supplierId', '==', currentUser.uid));
+    return onSnapshot(q, (snapshot) => {
+      const list = snapshot.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .filter(r => r.status === 'pending' || r.status === 'active')
+        .sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+      setRequests(list);
       setLoading(false);
-    }, (error) => {
-      console.error("Error fetching requests:", error);
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
+    }, () => setLoading(false));
   }, [currentUser]);
 
-  const handleDecline = async (requestId) => {
+  const handleDecline = async (id) => {
     try {
-      await updateDoc(doc(db, 'requests', requestId), { status: 'rejected' });
+      await updateDoc(doc(db, 'requests', id), { status: 'rejected' });
     } catch (err) {
-      alert("Failed to decline: " + err.message);
+      alert('Could not decline: ' + err.message);
     }
   };
 
-  const handleAcceptAndBill = async (req) => {
+  const handleBill = async (req) => {
     setSubmitting(prev => ({ ...prev, [req.id]: true }));
-
-    const baseAmount = Number(req.unitCost) * Number(req.quantityRequested);
-    const extra = parseFloat(extraCharges[req.id] || 0);
-    const totalAmount = baseAmount + (isNaN(extra) ? 0 : extra);
-
+    const base = Number(req.unitCost) * Number(req.quantityRequested);
+    const extra = parseFloat(extraCharges[req.id] || 0) || 0;
     let description = `${req.quantityRequested} ${req.unit || 'units'} of ${req.productName}`;
-    if (!isNaN(extra) && extra > 0) {
-      description += ` + ₹${extra.toFixed(2)} additional charges`;
-    }
-
+    if (extra > 0) description += ` + ₹${extra.toFixed(2)} additional charges`;
     try {
       await addDoc(collection(db, 'bills'), {
         requestId: req.id,
@@ -66,122 +49,50 @@ export default function SupplierRequests() {
         quantityRequested: req.quantityRequested,
         unitCost: req.unitCost,
         unit: req.unit || 'units',
-        baseAmount: baseAmount,
-        extraCharges: isNaN(extra) ? 0 : extra,
-        amount: totalAmount,
-        description: description,
+        baseAmount: base,
+        extraCharges: extra,
+        amount: base + extra,
+        description,
         status: 'unpaid',
         createdAt: serverTimestamp()
       });
-
       await updateDoc(doc(db, 'requests', req.id), { status: 'active' });
+      setExtraCharges(prev => ({ ...prev, [req.id]: '' }));
     } catch (err) {
-      console.error("Failed to send bill:", err);
-      alert("Failed to send bill: " + err.message);
+      alert('Could not send bill: ' + err.message);
     }
-
     setSubmitting(prev => ({ ...prev, [req.id]: false }));
   };
 
-  if (loading) {
-    return (
-      <div className="page-container" style={{ alignItems: 'center', paddingTop: '4rem' }}>
-        <span className="spinner" style={{ width: '2rem', height: '2rem' }}></span>
-      </div>
-    );
-  }
+  if (loading) return <div className="page-container"><div className="empty-state"><span className="spinner" /></div></div>;
 
   return (
     <div className="page-container">
-      <div className="page-header" style={{ marginBottom: '2rem' }}>
-        <h2 style={{ fontSize: '2.5rem', fontWeight: '700' }}>Incoming Requests</h2>
-        <p style={{ color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
-          Review and send bills to consumers for their orders.
-        </p>
-      </div>
+      <PageHeader title="Direct requests" subtitle="Buyers ordering from your catalogue. Add any extra charges and send them a bill." />
 
       {requests.length === 0 ? (
-        <div style={{ padding: '3rem', textAlign: 'center', border: '1px dashed var(--border-color)', color: 'var(--text-secondary)' }}>
-          You have no pending requests at this time.
-        </div>
+        <div className="empty-state">No requests right now.</div>
       ) : (
-        <div className="products-grid">
+        <div className="list">
           {requests.map(req => {
-            const baseAmount = Number(req.unitCost) * Number(req.quantityRequested);
-            const extra = parseFloat(extraCharges[req.id] || 0);
-            const totalAmount = baseAmount + (isNaN(extra) ? 0 : extra);
-            const isActive = req.status === 'active';
-
+            const base = Number(req.unitCost) * Number(req.quantityRequested);
+            const extra = parseFloat(extraCharges[req.id] || 0) || 0;
             return (
-              <div key={req.id} className="product-card">
-                <div className="product-icon-wrapper">
-                  {req.productName[0]}
+              <div key={req.id} className="list-row">
+                <div className="list-main">
+                  <div className="list-title">{req.productName} · {req.quantityRequested} {req.unit || 'units'}</div>
+                  <div className="list-sub">{req.consumerName} · {money(req.unitCost)} each · base {money(base)}</div>
                 </div>
-                <h4 className="product-name">{req.productName}</h4>
-
-                <div className="product-details" style={{ flexDirection: 'column', gap: '0.75rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
-                    <span className="stat-label">Requested By:</span>
-                    <span className="stat-value" style={{ fontWeight: '500' }}>{req.consumerName}</span>
-                  </div>
-
-                  <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
-                    <span className="stat-label">Quantity:</span>
-                    <span className="stat-value">{req.quantityRequested} {req.unit || 'units'}</span>
-                  </div>
-
-                  <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
-                    <span className="stat-label">Unit Cost:</span>
-                    <span className="stat-value">₹{Number(req.unitCost).toFixed(2)}</span>
-                  </div>
-
-                  {/* Auto-calculated bill preview */}
-                  <div style={{ width: '100%', borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
-                      <span className="stat-label">Base (cost × qty):</span>
-                      <span className="stat-value">₹{baseAmount.toFixed(2)}</span>
-                    </div>
-
-                    {/* Single field for personal charges */}
-                    <div className="form-group" style={{ margin: 0 }}>
-                      <input
-                        type="number"
-                        className="form-input"
-                        placeholder="Additional charges (₹)"
-                        min="0"
-                        step="0.01"
-                        value={extraCharges[req.id] || ''}
-                        onChange={(e) => setExtraCharges(prev => ({ ...prev, [req.id]: e.target.value }))}
-                        style={{ padding: '0.5rem 0.75rem' }}
-                      />
-                    </div>
-
-                    <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', paddingTop: '0.25rem', borderTop: '1px dashed var(--border-color)' }}>
-                      <span className="stat-label" style={{ fontWeight: '700', color: 'var(--text-primary)' }}>Total Bill:</span>
-                      <span className="stat-value" style={{ fontWeight: '700', fontSize: '1.0625rem' }}>₹{totalAmount.toFixed(2)}</span>
-                    </div>
-                  </div>
-
-                  {/* Action buttons */}
-                  <div style={{ display: 'flex', gap: '0.5rem', width: '100%', marginTop: '0.5rem' }}>
-                    <button
-                      onClick={() => handleAcceptAndBill(req)}
-                      disabled={submitting[req.id]}
-                      className="btn-primary"
-                      style={{ flex: 1, padding: '0.5rem', backgroundColor: '#000', color: '#fff' }}
-                    >
-                      {submitting[req.id] ? 'Sending…' : isActive ? 'Send Another Bill' : 'Accept & Send Bill'}
-                    </button>
-                    {req.status === 'pending' && (
-                      <button
-                        onClick={() => handleDecline(req.id)}
-                        className="btn-primary"
-                        style={{ flex: 1, padding: '0.5rem', backgroundColor: 'transparent', color: 'var(--text-primary)' }}
-                      >
-                        Decline
-                      </button>
-                    )}
-                  </div>
+                <div className="list-meta">
+                  <span className={`status-pill status-${req.status === 'active' ? 'active' : 'closed'}`}>{req.status === 'active' ? 'Billed' : 'New'}</span>
+                  <input type="number" min="0" step="0.01" placeholder="Extra ₹" className="form-input qty-input"
+                    value={extraCharges[req.id] || ''} onChange={e => setExtraCharges(prev => ({ ...prev, [req.id]: e.target.value }))} />
+                  <button className="btn-primary btn-sm" style={{ marginTop: 0 }} disabled={submitting[req.id]} onClick={() => handleBill(req)}>
+                    {submitting[req.id] ? 'Sending…' : `${req.status === 'active' ? 'Bill again' : 'Send bill'} · ${money(base + extra)}`}
+                  </button>
+                  {req.status === 'pending' && (
+                    <button className="btn-secondary btn-sm" onClick={() => handleDecline(req.id)}>Decline</button>
+                  )}
                 </div>
               </div>
             );

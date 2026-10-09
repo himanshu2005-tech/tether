@@ -2,23 +2,22 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../firebase';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
-import { Search, Download } from 'lucide-react';
+import { Download } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { RiskBadge, PageHeader } from './Guide';
 
 export default function MyOrders() {
-  const { currentUser } = useAuth();
+  const { currentUser, orgId } = useAuth();
   const navigate = useNavigate();
   const [bills, setBills] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
     if (!currentUser) return;
 
     const q = query(
       collection(db, 'bills'),
-      where('consumerId', '==', currentUser.uid)
+      where('consumerId', '==', orgId)
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -36,7 +35,7 @@ export default function MyOrders() {
     });
 
     return () => unsubscribe();
-  }, [currentUser]);
+  }, [currentUser, orgId]);
 
   const handlePay = (billId) => {
     navigate(`/checkout/${billId}`);
@@ -93,46 +92,27 @@ export default function MyOrders() {
     return <div className="page-container"><div className="empty-state"><span className="spinner" /></div></div>;
   }
 
-  const filteredBills = bills.filter(bill => {
-    if (!searchQuery.trim()) return true;
-    const term = searchQuery.replace('#', '').trim().toUpperCase();
-    return (
-      bill.id.substring(0, 8).toUpperCase().includes(term) ||
-      bill.productName?.toUpperCase().includes(term) ||
-      bill.description?.toUpperCase().includes(term)
-    );
-  });
+  const filteredBills = bills;
 
   const statusOf = (bill) =>
     bill.status === 'paid' ? { label: 'Paid', cls: 'paid' }
     : bill.status === 'rejected' ? { label: 'Rejected', cls: 'rejected' }
     : bill.reviewStatus === 'pending_review' ? { label: 'Needs review', cls: 'closed' }
-    : { label: 'Unpaid', cls: 'unpaid' };
+    : !bill.approval ? { label: 'Being validated', cls: 'closed' }
+    : bill.approval.status === 'approved' ? { label: 'Approved', cls: 'active' }
+    : { label: 'In approval', cls: 'closed' };
 
   return (
     <div className="page-container">
       <PageHeader
-        title="Invoices"
-        subtitle="Bills from your suppliers. Each one is checked by AI before you pay."
+        title="Invoices"
+
+        subtitle="Bills from your suppliers, checked by AI before you pay. Use the search bar to find one by ID."
       />
 
-      {bills.length > 0 && (
-        <div className="search-field">
-          <Search size={17} />
-          <input
-            type="text"
-            className="form-input"
-            placeholder="Search by ID, product or description"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-        </div>
-      )}
 
       {bills.length === 0 ? (
         <div className="empty-state">No invoices yet. They appear here when a supplier bills you.</div>
-      ) : filteredBills.length === 0 ? (
-        <div className="empty-state">Nothing matches "{searchQuery}".</div>
       ) : (
         <div className="list">
           {filteredBills.map(bill => {
@@ -154,7 +134,7 @@ export default function MyOrders() {
                   </button>
                   {canPay && (
                     <button className="btn-primary btn-sm" style={{ marginTop: 0 }} onClick={() => handlePay(bill.id)}>
-                      {bill.reviewStatus === 'pending_review' ? 'Review' : 'Pay'}
+                      {bill.approval?.status === 'approved' && bill.reviewStatus !== 'pending_review' ? 'Pay' : 'View'}
                     </button>
                   )}
                 </div>

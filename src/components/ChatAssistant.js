@@ -10,7 +10,7 @@ import {
   MessageCircle, X, Send, Sparkles, Gavel, FileText, FileSignature, ShieldAlert,
   Package, Inbox, CheckCircle2, AlertCircle, ArrowRight, Target
 } from 'lucide-react';
-import { PREDEFINED_PRODUCTS } from '../constants/products';
+import { PREDEFINED_PRODUCTS, inPlayArea, industryName } from '../constants/products';
 import { RiskBadge, InfoTip } from './Guide';
 
 // Called straight from the browser with the key in .env
@@ -104,8 +104,10 @@ const TOOL_STATUS = {
 
 // ─── Tool executor ─────────────────────────────────────────────────────────────
 
-async function executeTool(name, args, { currentUser, navigate, focus }) {
+async function executeTool(name, args, { currentUser, userData, navigate, focus, orgId }) {
   const uid = currentUser?.uid;
+  // Buyer data belongs to the organisation, not the individual team member
+  const org = orgId || uid;
   switch (name) {
     case 'navigate_to': {
       navigate('/' + (args.page === 'home' ? '' : args.page));
@@ -116,13 +118,15 @@ async function executeTool(name, args, { currentUser, navigate, focus }) {
       const snap = await getDocs(query(collection(db, 'tenders'), where('status', '==', 'open')));
       const bidSnap = await getDocs(query(collection(db, 'bids'), where('supplierId', '==', uid)));
       const bidOn = new Set(bidSnap.docs.map(d => d.data().tenderId));
-      const wanted = args.product_name ? [args.product_name] : focus;
       let tenders = snap.docs.map(d => ({ id: d.id, ...d.data(), alreadyBid: bidOn.has(d.id) }));
-      if (wanted.length) {
-        const w = wanted.map(p => p.toLowerCase());
-        tenders = tenders.filter(t => w.includes(String(t.productName).toLowerCase()));
+      // A named product narrows the search; otherwise show the supplier's play area
+      if (args.product_name) {
+        const want = args.product_name.toLowerCase();
+        tenders = tenders.filter(t => String(t.productName).toLowerCase() === want);
+      } else {
+        tenders = tenders.filter(t => inPlayArea(t, userData));
       }
-      return { type: 'tender_list', audience: 'supplier', tenders, filter: wanted };
+      return { type: 'tender_list', audience: 'supplier', tenders, filter: args.product_name ? [args.product_name] : focus };
     }
 
     case 'my_bids': {
@@ -141,14 +145,14 @@ async function executeTool(name, args, { currentUser, navigate, focus }) {
     }
 
     case 'list_my_tenders': {
-      const snap = await getDocs(query(collection(db, 'tenders'), where('buyerId', '==', uid)));
+      const snap = await getDocs(query(collection(db, 'tenders'), where('buyerId', '==', org)));
       let tenders = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       if (args.status === 'open') tenders = tenders.filter(t => t.status === 'open');
       return { type: 'tender_list', audience: 'buyer', tenders };
     }
 
     case 'list_bills': {
-      const snap = await getDocs(query(collection(db, 'bills'), where('consumerId', '==', uid)));
+      const snap = await getDocs(query(collection(db, 'bills'), where('consumerId', '==', org)));
       let bills = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       if (args.status === 'unpaid') bills = bills.filter(b => b.status === 'unpaid');
       if (args.status === 'paid') bills = bills.filter(b => b.status === 'paid');
@@ -158,7 +162,7 @@ async function executeTool(name, args, { currentUser, navigate, focus }) {
     }
 
     case 'risk_summary': {
-      const snap = await getDocs(query(collection(db, 'bills'), where('consumerId', '==', uid)));
+      const snap = await getDocs(query(collection(db, 'bills'), where('consumerId', '==', org)));
       const bills = snap.docs.map(d => d.data()).filter(b => b.analysis);
       const pending = bills.filter(b => b.reviewStatus === 'pending_review');
       return {
@@ -174,7 +178,7 @@ async function executeTool(name, args, { currentUser, navigate, focus }) {
 
     case 'pay_bill': {
       const id = args.bill_id.replace('#', '').trim().toUpperCase();
-      const snap = await getDocs(query(collection(db, 'bills'), where('consumerId', '==', uid)));
+      const snap = await getDocs(query(collection(db, 'bills'), where('consumerId', '==', org)));
       const found = snap.docs.map(d => ({ id: d.id, ...d.data() })).find(b => shortId(b.id) === id);
       if (!found) return { type: 'notice', ok: false, message: `No bill found with ID #${id}.` };
       if (found.status === 'paid') return { type: 'notice', ok: true, message: `Bill #${id} is already paid.` };
@@ -183,7 +187,7 @@ async function executeTool(name, args, { currentUser, navigate, focus }) {
 
     case 'verify_payment': {
       const id = args.payment_id.replace('#', '').trim().toUpperCase();
-      const snap = await getDocs(query(collection(db, 'bills'), where('consumerId', '==', uid), where('status', '==', 'paid')));
+      const snap = await getDocs(query(collection(db, 'bills'), where('consumerId', '==', org), where('status', '==', 'paid')));
       const found = snap.docs.map(d => ({ id: d.id, ...d.data() })).find(b => shortId(b.id) === id);
       return found
         ? { type: 'notice', ok: true, message: `Payment confirmed: #${id}, ${found.productName}, ${money(found.amount)}.` }
@@ -200,7 +204,7 @@ async function executeTool(name, args, { currentUser, navigate, focus }) {
     }
 
     case 'set_company_limit': {
-      const limRef = doc(db, 'limits', uid);
+      const limRef = doc(db, 'limits', org);
       const existing = await getDoc(limRef);
       const current = existing.exists() ? (existing.data().limits || {}) : {};
       await setDoc(limRef, { limits: { ...current, [args.product_name]: args.max_price_per_unit } }, { merge: true });
@@ -311,7 +315,8 @@ function SearchResults({ data, currentUser, userData }) {
     setRequested(p => ({ ...p, [r.id]: 'loading' }));
     try {
       await addDoc(collection(db, 'requests'), {
-        consumerId: currentUser.uid,
+        consumerId: userData?.orgId || currentUser.uid,
+        requestedBy: currentUser.uid,
         consumerName: userData?.companyName || currentUser.email,
         supplierId: r.supplierId,
         productId: r.id,
@@ -533,7 +538,7 @@ function FormattedText({ text }) {
 // ─── Main component ────────────────────────────────────────────────────────────
 
 export default function ChatAssistant() {
-  const { currentUser, userData } = useAuth();
+  const { currentUser, userData, orgId } = useAuth();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState([]); // { role, content, results?: [] }
@@ -565,22 +570,23 @@ export default function ChatAssistant() {
             getDocs(query(collection(db, 'bids'), where('supplierId', '==', currentUser.uid))),
             getDocs(query(collection(db, 'tenders'), where('status', '==', 'open')))
           ]);
-          // A supplier's focus is what they actually sell: catalogue products plus products they've won contracts for
-          const sells = [...new Set([...products.docs.map(d => d.data().name), ...contracts.docs.map(d => d.data().productName)])];
-          const matching = tenders.docs.filter(d => !sells.length || sells.map(s => s.toLowerCase()).includes(String(d.data().productName).toLowerCase()));
-          setFocus(sells);
+          // A supplier's focus is their play area: the industries they chose at sign-up or in Profile
+          const areas = (userData?.industries || []).map(industryName);
+          const matching = tenders.docs.filter(d => inPlayArea(d.data(), userData));
+          const catalogue = products.docs.map(d => d.data().name);
+          setFocus(areas);
           setSuggestions([
-            sells.length ? `Show open tenders for ${sells[0]}` : 'Show open tenders',
+            areas.length ? `Any new tenders in ${areas[0]}?` : 'Show open tenders',
             'How are my bids doing?',
             contracts.size ? 'Which contracts can I invoice?' : 'List my products',
             'Do I have any direct requests?'
           ]);
-          setContext(`Company: ${name} (supplier). Sells: ${sells.join(', ') || 'not set yet'}. ` +
-            `Open tenders matching what they sell: ${matching.length}. Bids placed: ${bids.size}. Contracts won: ${contracts.size}.`);
+          setContext(`Company: ${name} (supplier). Play area (industries): ${areas.join(', ') || 'not chosen yet'}. Catalogue: ${catalogue.join(', ') || 'empty'}. ` +
+            `Open tenders in their play area: ${matching.length}. Bids placed: ${bids.size}. Contracts won: ${contracts.size}.`);
         } else {
           const [tenders, bills] = await Promise.all([
-            getDocs(query(collection(db, 'tenders'), where('buyerId', '==', currentUser.uid))),
-            getDocs(query(collection(db, 'bills'), where('consumerId', '==', currentUser.uid)))
+            getDocs(query(collection(db, 'tenders'), where('buyerId', '==', orgId))),
+            getDocs(query(collection(db, 'bills'), where('consumerId', '==', orgId)))
           ]);
           const all = bills.docs.map(d => d.data());
           const flagged = all.filter(b => b.reviewStatus === 'pending_review').length;
@@ -600,13 +606,13 @@ export default function ChatAssistant() {
         setContext('Context unavailable.');
       }
     })();
-  }, [open, currentUser, userData, role, isSupplier, context]);
+  }, [open, currentUser, userData, role, isSupplier, context, orgId]);
 
   const buildSystem = () =>
     `You are Tether's assistant inside a B2B procurement app where buyers post tenders, suppliers bid, and AI checks invoices. ` +
     `Use ₹ for money. Be brief and friendly; explain in simple words a student would understand.
 Always call a tool when the user asks for data or an action. Results are shown to the user as boxes, so after a tool runs reply in ONE short sentence that adds insight or a next step. Never repeat the list.
-${isSupplier && focus.length ? `This supplier only sells: ${focus.join(', ')}. Keep the conversation to these products and do not suggest other products unless the user asks.` : ''}
+${isSupplier && focus.length ? `This supplier only works in these industries: ${focus.join(', ')}. Keep the conversation to these industries and do not suggest tenders or products outside them unless the user asks.` : ''}
 Context: ${context || 'loading'}`;
 
   const send = async (textArg) => {
@@ -618,7 +624,7 @@ Context: ${context || 'loading'}`;
     setStatus('Thinking');
 
     const tools = buildTools(role);
-    const ctx = { currentUser, navigate, focus };
+    const ctx = { currentUser, userData, navigate, focus, orgId };
     // The model sees plain text history; result boxes stay attached to the message that produced them
     let convo = history.map(m => ({ role: m.role, content: m.content }));
     const results = [];
@@ -662,6 +668,18 @@ Context: ${context || 'loading'}`;
     setStatus(null);
   };
 
+  // The top search bar can hand a question to the assistant ("Ask the assistant: …")
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  useEffect(() => {
+    const onAsk = (e) => {
+      setOpen(true);
+      setTimeout(() => sendRef.current(e.detail), 50);
+    };
+    window.addEventListener('tether:ask', onAsk);
+    return () => window.removeEventListener('tether:ask', onAsk);
+  }, []);
+
   if (!currentUser) return null;
 
   return (
@@ -679,7 +697,7 @@ Context: ${context || 'loading'}`;
           {isSupplier && focus.length > 0 && (
             <div className="chat-focus">
               <Target size={13} />
-              <span>Showing only what you sell: <strong>{focus.join(', ')}</strong></span>
+              <span>Your play area: <strong>{focus.join(', ')}</strong></span>
             </div>
           )}
 

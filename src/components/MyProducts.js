@@ -1,201 +1,125 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { collection, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
+import { Plus } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../firebase';
-import { collection, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
 import { PREDEFINED_PRODUCTS } from '../constants/products';
+import { PageHeader } from './Guide';
+
+const UNITS = ['units', 'kg', 'tons', 'liters', 'meters', 'boxes'];
+const EMPTY = { name: '', quantity: '', unit: 'units', cost: '' };
 
 export default function MyProducts() {
   const { currentUser, userData } = useAuth();
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
-  
-  // Form State
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState(EMPTY);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  
-  const productRef = useRef();
-  const quantityRef = useRef();
-  const unitRef = useRef();
-  const costRef = useRef();
 
-  useEffect(() => {
-    fetchProducts();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser]);
-
-  const fetchProducts = async () => {
+  const fetchProducts = useCallback(async () => {
     if (!currentUser) return;
     try {
-      const q = query(collection(db, "products"), where("supplierId", "==", currentUser.uid));
-      const querySnapshot = await getDocs(q);
-      const fetchedProducts = [];
-      querySnapshot.forEach((doc) => {
-        fetchedProducts.push({ id: doc.id, ...doc.data() });
-      });
-      setProducts(fetchedProducts);
+      const snap = await getDocs(query(collection(db, 'products'), where('supplierId', '==', currentUser.uid)));
+      setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     } catch (err) {
-      console.error("Error fetching products:", err);
+      console.error('Error fetching products:', err);
     }
     setLoading(false);
-  };
+  }, [currentUser]);
 
-  const handleAddProduct = async (e) => {
+  useEffect(() => { fetchProducts(); }, [fetchProducts]);
+
+  const set = (k) => (e) => setForm(prev => ({ ...prev, [k]: e.target.value }));
+
+  const handleAdd = async (e) => {
     e.preventDefault();
-    setError('');
-    setIsSubmitting(true);
-
-    const productName = productRef.current.value;
-    const quantity = parseInt(quantityRef.current.value, 10);
-    const unit = unitRef.current.value;
-    const cost = parseFloat(costRef.current.value);
-
-    if (!productName || !unit || isNaN(quantity) || isNaN(cost)) {
-      setError('Please fill out all fields correctly.');
-      setIsSubmitting(false);
+    const quantity = parseInt(form.quantity, 10);
+    const cost = parseFloat(form.cost);
+    if (!form.name.trim() || isNaN(quantity) || isNaN(cost)) {
+      setError('Fill in the product, quantity and price.');
       return;
     }
-
+    setSaving(true);
+    setError('');
     try {
       await addDoc(collection(db, 'products'), {
         supplierId: currentUser.uid,
         companyName: userData?.companyName || currentUser.email,
-        name: productName,
-        quantity: quantity,
-        unit: unit,
-        cost: cost,
+        name: form.name.trim(),
+        quantity,
+        unit: form.unit,
+        cost,
         createdAt: serverTimestamp()
       });
-      
-      // Refresh list and close form
+      setForm(EMPTY);
+      setAdding(false);
       await fetchProducts();
-      setShowAddForm(false);
     } catch (err) {
-      setError('Failed to add product: ' + err.message);
+      setError('Could not add product: ' + err.message);
     }
-    
-    setIsSubmitting(false);
+    setSaving(false);
   };
 
   return (
     <div className="page-container">
-      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
-        <h2 style={{ fontSize: '2.5rem', fontWeight: '700' }}>My Products</h2>
-        <button className="btn-primary" onClick={() => setShowAddForm(!showAddForm)} style={{ marginTop: 0 }}>
-          {showAddForm ? 'Cancel' : '+ Add Product'}
-        </button>
-      </div>
+      <PageHeader
+        title="My catalogue"
+        subtitle="Stock buyers can order directly. These products also decide which tenders the assistant shows you."
+        action={!adding && <button className="btn-primary" style={{ marginTop: 0 }} onClick={() => setAdding(true)}><Plus size={16} /> Add product</button>}
+      />
 
-      {error && <div className="error-message">{error}</div>}
-
-      {showAddForm && (
-        <div className="form-container" style={{ padding: '2rem', border: '1px solid var(--border-color)', marginBottom: '2rem' }}>
-          <h3 style={{ marginBottom: '1.5rem', fontWeight: '500' }}>Add New Product</h3>
-          <form onSubmit={handleAddProduct} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            
+      {adding && (
+        <form className="card form-card" onSubmit={handleAdd}>
+          <div className="field-grid">
+            <div className="form-group field-wide">
+              <label className="form-label" htmlFor="p-name">Product</label>
+              <input id="p-name" className="form-input" list="product-list" value={form.name} onChange={set('name')} placeholder="e.g. Steel Beams" autoFocus />
+              <datalist id="product-list">{PREDEFINED_PRODUCTS.map(p => <option key={p} value={p} />)}</datalist>
+            </div>
             <div className="form-group">
-              <label className="form-label" htmlFor="product">Product Name</label>
-              <input type="text" id="product" className="form-input" ref={productRef} list="predefined-products" placeholder="e.g. Custom Microchips" required />
-              <datalist id="predefined-products">
-                {PREDEFINED_PRODUCTS.map(p => (
-                  <option key={p} value={p} />
-                ))}
-              </datalist>
+              <label className="form-label" htmlFor="p-qty">Quantity in stock</label>
+              <input id="p-qty" type="number" min="1" className="form-input" value={form.quantity} onChange={set('quantity')} />
             </div>
-
-            <div style={{ display: 'flex', gap: '1rem' }}>
-              <div className="form-group" style={{ flex: 1 }}>
-                <label className="form-label" htmlFor="quantity">Total Quantity</label>
-                <input type="number" id="quantity" className="form-input" ref={quantityRef} required min="1" placeholder="100" />
-              </div>
-
-              <div className="form-group" style={{ flex: 1 }}>
-                <label className="form-label" htmlFor="unit">Unit</label>
-                <select id="unit" className="form-input" ref={unitRef} required>
-                  <option value="units">Units</option>
-                  <option value="kg">kg</option>
-                  <option value="tons">Tons</option>
-                  <option value="liters">Liters</option>
-                  <option value="meters">Meters</option>
-                  <option value="boxes">Boxes</option>
-                </select>
-              </div>
-              
-              <div className="form-group" style={{ flex: 1 }}>
-                <label className="form-label" htmlFor="cost">Cost (per 1 unit)</label>
-                <input type="number" id="cost" className="form-input" ref={costRef} required min="0.01" step="0.01" placeholder="50.00" />
-              </div>
+            <div className="form-group">
+              <label className="form-label" htmlFor="p-unit">Unit</label>
+              <select id="p-unit" className="form-input" value={form.unit} onChange={set('unit')}>
+                {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+              </select>
             </div>
-
-            <button disabled={isSubmitting} className="btn-primary" type="submit">
-              {isSubmitting ? <span className="spinner"></span> : 'Save Product'}
-            </button>
-          </form>
-        </div>
+            <div className="form-group">
+              <label className="form-label" htmlFor="p-cost">Price per unit (₹)</label>
+              <input id="p-cost" type="number" min="0.01" step="0.01" className="form-input" value={form.cost} onChange={set('cost')} />
+            </div>
+          </div>
+          {error && <div className="error-message" style={{ marginTop: '1rem' }}>{error}</div>}
+          <div className="form-actions">
+            <button type="button" className="btn-secondary" onClick={() => { setAdding(false); setForm(EMPTY); setError(''); }}>Cancel</button>
+            <button type="submit" className="btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Save product'}</button>
+          </div>
+        </form>
       )}
 
       {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '3rem' }}>
-          <span className="spinner" style={{ width: '2rem', height: '2rem' }}></span>
-        </div>
+        <div className="empty-state"><span className="spinner" /></div>
       ) : products.length === 0 ? (
-        <div style={{ padding: '3rem', textAlign: 'center', border: '1px dashed var(--border-color)', color: 'var(--text-secondary)' }}>
-          You have no products listed yet.
-        </div>
+        <div className="empty-state">Nothing listed yet. Add a product so buyers can order it.</div>
       ) : (
-        <div className="products-grid">
-          {products.map(product => {
-            const Icon = getProductIcon(product.name);
-            return (
-              <div key={product.id} className="product-card">
-                <div className="product-icon-wrapper">
-                  <Icon size={32} />
-                </div>
-                <h4 className="product-name">{product.name}</h4>
-                <div className="product-details">
-                  <div className="product-stat">
-                    <span className="stat-label">Qty</span>
-                    <span className="stat-value">{product.quantity} {product.unit || 'units'}</span>
-                  </div>
-                  <div className="product-stat">
-                    <span className="stat-label">Cost</span>
-                    <span className="stat-value">₹{Number(product.cost).toFixed(2)} / {product.unit === 'units' ? 'unit' : (product.unit || 'unit')}</span>
-                  </div>
-                </div>
+        <div className="list">
+          {products.map(p => (
+            <div key={p.id} className="list-row">
+              <div className="list-main">
+                <div className="list-title">{p.name}</div>
+                <div className="list-sub">{p.quantity} {p.unit || 'units'} in stock</div>
               </div>
-            );
-          })}
+              <div className="list-meta">
+                <span className="list-amount">₹{Number(p.cost).toLocaleString('en-IN', { maximumFractionDigits: 2 })} <span className="list-unit">/ {p.unit === 'units' ? 'unit' : p.unit || 'unit'}</span></span>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
   );
-}
-
-// Helper to assign icons to predefined products
-function getProductIcon(name) {
-  const n = name.toLowerCase();
-  
-  if (n.includes('iron') || n.includes('steel') || n.includes('copper') || n.includes('aluminum')) {
-    return require('lucide-react').Database; // Representing raw materials/metals
-  }
-  if (n.includes('computer') || n.includes('laptop')) {
-    return require('lucide-react').Monitor;
-  }
-  if (n.includes('chip') || n.includes('gpu') || n.includes('motherboard') || n.includes('wafer')) {
-    return require('lucide-react').Cpu;
-  }
-  if (n.includes('batter')) {
-    return require('lucide-react').Battery;
-  }
-  if (n.includes('box') || n.includes('pallet') || n.includes('wrap')) {
-    return require('lucide-react').Box;
-  }
-  if (n.includes('motor') || n.includes('pump') || n.includes('compressor') || n.includes('belt')) {
-    return require('lucide-react').Settings; // Machinery
-  }
-  if (n.includes('cable') || n.includes('display')) {
-    return require('lucide-react').Plug;
-  }
-  
-  return require('lucide-react').Package; // Fallback
 }

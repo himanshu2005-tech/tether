@@ -33,7 +33,7 @@ export default function ForgotPassword() {
       </div>
       
       {error && <div className="error-message">{error}</div>}
-      {message && <div style={{ backgroundColor: 'rgba(59, 130, 246, 0.1)', color: 'var(--primary-color)', padding: '0.75rem', borderRadius: '0.5rem', marginBottom: '1rem', border: '1px solid rgba(59, 130, 246, 0.2)' }}>{message}</div>}
+      {message && <div className="success-message">{message}</div>}
       
       <form onSubmit={handleSubmit} className="auth-form">
         <div className="form-group">

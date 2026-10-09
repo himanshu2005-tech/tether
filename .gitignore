@@ -31,3 +31,8 @@ server/node_modules
 
 # firebase cache
 .firebase/
+
+# Firebase emulator logs
+firebase-debug.log
+firestore-debug.log
+ui-debug.log

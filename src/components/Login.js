@@ -28,8 +28,8 @@ export default function Login() {
   return (
     <div className="auth-card">
       <div className="auth-header">
-        <h2 className="auth-title">Welcome Back</h2>
-        <p className="auth-subtitle">Sign in to your account to continue</p>
+        <h2 className="auth-title">Welcome back</h2>
+        <p className="auth-subtitle">Sign in to continue.</p>
       </div>
       
       {error && <div className="error-message">{error}</div>}
@@ -48,9 +48,9 @@ export default function Login() {
         </div>
         
         <div className="form-group">
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <div className="row-between">
             <label className="form-label" htmlFor="password">Password</label>
-            <Link to="/forgot-password" style={{ fontSize: '0.875rem' }}>Forgot Password?</Link>
+            <Link to="/forgot-password" className="small-link">Forgot Password?</Link>
           </div>
           <input 
             type="password" 
@@ -63,7 +63,7 @@ export default function Login() {
         </div>
         
         <button disabled={loading} className="btn-primary" type="submit">
-          {loading ? <span className="spinner"></span> : 'Log In'}
+          {loading ? <span className="spinner"></span> : 'Sign in'}
         </button>
       </form>
       

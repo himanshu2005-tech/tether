@@ -1,159 +1,141 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { doc, getDoc, updateDoc, collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { Star, CreditCard } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../firebase';
-import { doc, getDoc, updateDoc, collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { Star, ShieldCheck, CreditCard, ChevronLeft } from 'lucide-react';
 import { RiskBadge, FlagList } from './Guide';
+import { ApprovalProgress } from './Approvals';
+import { can, ROLE_LABELS } from '../security/roles';
+import { logAudit } from '../services/audit';
+import { notify } from '../services/notify';
+
+const money = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
 export default function Checkout() {
   const { billId } = useParams();
   const navigate = useNavigate();
-  const { currentUser } = useAuth();
-  
+  const { currentUser, orgId, role } = useAuth();
   const [bill, setBill] = useState(null);
   const [loading, setLoading] = useState(true);
   const [paying, setPaying] = useState(false);
-  
   const [rating, setRating] = useState(0);
-  const [hoverRating, setHoverRating] = useState(0);
+  const [hover, setHover] = useState(0);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    const fetchBill = async () => {
-      try {
-        const docRef = doc(db, 'bills', billId);
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists() && docSnap.data().consumerId === currentUser.uid) {
-          setBill({ id: docSnap.id, ...docSnap.data() });
-        } else {
-          alert("Bill not found or access denied.");
-          navigate('/my-orders');
-        }
-      } catch (err) {
-        console.error("Error fetching bill:", err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchBill();
-  }, [billId, currentUser, navigate]);
+    getDoc(doc(db, 'bills', billId))
+      .then(snap => {
+        if (snap.exists() && snap.data().consumerId === orgId) setBill({ id: snap.id, ...snap.data() });
+        else navigate('/my-orders');
+      })
+      .catch(err => console.error('Error fetching bill:', err))
+      .finally(() => setLoading(false));
+  }, [billId, currentUser, orgId, navigate]);
 
   const analysis = bill?.analysis;
   const isRejected = bill?.reviewStatus === 'rejected';
   // Invoices the AI puts on hold can only be paid after the buyer approves them in the Risk Center
   const isBlocked = isRejected || (analysis?.level === 'hold' && bill?.reviewStatus !== 'approved');
+  const isPaid = bill?.status === 'paid';
+  // Payment needs the full approval chain. Every unpaid invoice, older ones included, gets one
+  // automatically when a buyer team member is online (see services/approvals.js)
+  const awaitingApproval = !!bill && !isPaid && !isRejected && bill.approval?.status !== 'approved';
+  const mayPay = can.pay(role);
 
-  const handlePayment = async () => {
-    if (isBlocked) return;
-    if (rating === 0) {
-      alert("Please rate the supplier before paying!");
-      return;
-    }
+  const pay = async () => {
+    if (isBlocked || isPaid || awaitingApproval || !mayPay) return;
+    if (!rating) { setError('Rate the supplier before paying.'); return; }
     setPaying(true);
-    
+    setError('');
     try {
-      // Mark bill as paid
-      await updateDoc(doc(db, 'bills', bill.id), { status: 'paid' });
-      
-      // Save the rating
+      await updateDoc(doc(db, 'bills', bill.id), { status: 'paid', paidBy: currentUser.uid, paidAt: serverTimestamp() });
+      const ref = `#${bill.invoiceNumber || bill.id.substring(0, 8).toUpperCase()}`;
+      await logAudit({ action: 'PAYMENT_COMPLETED', entityType: 'invoice', entityId: bill.id, entityLabel: ref,
+        previous: { status: bill.status }, next: { status: 'paid', amount: bill.amount }, meta: { supplierId: bill.supplierId, rating } });
+      await notify({ userIds: [bill.supplierId] }, {
+        kind: 'payment_completed', severity: 'info', title: `Invoice ${ref} paid`,
+        message: `${money(bill.amount)} for ${bill.productName} was paid.`, entityType: 'invoice', entityId: bill.id, link: '/my-invoices'
+      });
       await addDoc(collection(db, 'ratings'), {
-        consumerId: currentUser.uid,
+        consumerId: orgId,
+        ratedBy: currentUser.uid,
         supplierId: bill.supplierId,
         billId: bill.id,
         productId: bill.productId || null,
         productName: bill.productName || 'Unknown',
-        rating: rating,
+        rating,
         createdAt: serverTimestamp()
       });
-      
-      navigate('/my-orders');
+      navigate(`/payments?id=${bill.id.substring(0, 8).toUpperCase()}`);
     } catch (err) {
-      console.error("Payment error:", err);
-      alert("Payment failed: " + err.message);
+      setError('Payment failed: ' + err.message);
       setPaying(false);
     }
   };
 
-  if (loading) return <div className="page-container"><span className="spinner"></span></div>;
+  if (loading) return <div className="page-container"><div className="empty-state"><span className="spinner" /></div></div>;
   if (!bill) return null;
 
   return (
-    <div className="page-container" style={{ maxWidth: '600px', margin: '0 auto' }}>
-      <button onClick={() => navigate('/my-orders')} className="btn-secondary" style={{ marginBottom: '1.5rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', color: 'var(--text-primary)', backgroundColor: 'transparent', border: '1px solid var(--border-color)' }}>
-        <ChevronLeft size={18} /> Back to Orders
-      </button>
+    <div className="page-container narrow">
+      <button className="back-link" onClick={() => navigate('/my-orders')}>‹ Invoices</button>
+      <h1 className="page-title" style={{ marginBottom: '1.5rem' }}>Pay invoice</h1>
 
-      <div style={{ backgroundColor: 'var(--surface-color)', padding: '2rem', borderRadius: '1rem', border: '1px solid var(--border-color)', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}>
-        <h2 style={{ fontSize: '1.5rem', fontWeight: '600', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <ShieldCheck color="var(--primary-color)" /> Secure Checkout
-        </h2>
+      <section className="card">
+        <dl className="detail-list">
+          <div><dt>Product</dt><dd>{bill.productName}</dd></div>
+          <div><dt>Invoice</dt><dd className="mono">#{bill.id.substring(0, 8).toUpperCase()}</dd></div>
+          <div><dt>Details</dt><dd>{bill.description}</dd></div>
+          <div className="detail-total"><dt>Total</dt><dd>{money(bill.amount)}</dd></div>
+        </dl>
+      </section>
 
-        <div style={{ backgroundColor: 'var(--background-color)', padding: '1rem', borderRadius: '0.5rem', marginBottom: '1.5rem' }}>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>Paying for</p>
-          <h3 style={{ fontSize: '1.25rem', fontWeight: '600' }}>{bill.productName}</h3>
-          <p style={{ fontFamily: 'monospace', color: 'var(--text-secondary)', fontSize: '0.875rem' }}>Bill #{bill.id.substring(0, 8).toUpperCase()}</p>
-          
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid var(--border-color)' }}>
-            <span style={{ fontWeight: '500' }}>Total Amount</span>
-            <span style={{ fontSize: '1.5rem', fontWeight: '700' }}>₹{Number(bill.amount).toFixed(2)}</span>
+      {analysis && (
+        <section className={`ai-panel ai-panel-${analysis.level}`}>
+          <div className="row-between">
+            <strong>AI invoice check</strong>
+            <RiskBadge analysis={analysis} />
           </div>
-        </div>
+          <p style={{ marginTop: '0.5rem' }}>{analysis.summary}</p>
+          <FlagList flags={analysis.flags} />
+          {bill.reviewStatus === 'approved' && <p className="muted" style={{ marginTop: '0.5rem' }}>You reviewed and approved this invoice.</p>}
+          {isBlocked && !isRejected && (
+            <button className="btn-secondary" style={{ marginTop: '0.9rem' }} onClick={() => navigate('/risk')}>Review in Risk Center</button>
+          )}
+        </section>
+      )}
 
-        {analysis && (
-          <div className={`ai-panel ai-panel-${analysis.level}`} style={{ marginBottom: '1.5rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
-              <strong>Tether AI invoice check</strong>
-              <RiskBadge analysis={analysis} />
-            </div>
-            <p style={{ marginTop: '0.5rem' }}>{analysis.summary}</p>
-            <FlagList flags={analysis.flags} />
-            {bill.reviewStatus === 'approved' && <p style={{ marginTop: '0.5rem', fontSize: '0.85rem' }}>You reviewed and approved this invoice.</p>}
-            {isBlocked && !isRejected && (
-              <button className="btn-secondary" style={{ marginTop: '0.75rem' }} onClick={() => navigate('/risk')}>
-                Review in Risk Center
+      {bill.approval && (
+        <section className="card"><h3 className="section-title">Approvals</h3><ApprovalProgress approval={bill.approval} /></section>
+      )}
+
+      {!isPaid && !isBlocked && !awaitingApproval && mayPay && (
+        <section className="card">
+          <h3 className="section-title">Rate the supplier</h3>
+          <div className="stars" onMouseLeave={() => setHover(0)}>
+            {[1, 2, 3, 4, 5].map(n => (
+              <button key={n} type="button" className="star-btn" aria-label={`${n} star${n > 1 ? 's' : ''}`}
+                onMouseEnter={() => setHover(n)} onClick={() => setRating(n)}>
+                <Star size={26} className={(hover || rating) >= n ? 'star on' : 'star'} />
               </button>
-            )}
-          </div>
-        )}
-        {!analysis && bill.contractId && (
-          <p style={{ marginBottom: '1.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-            This invoice has not been checked by Tether AI yet. You can run the check from the Risk Center.
-          </p>
-        )}
-
-        <div style={{ marginBottom: '2rem' }}>
-          <h4 style={{ fontWeight: '500', marginBottom: '0.75rem' }}>Rate Supplier before paying</h4>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            {[1, 2, 3, 4, 5].map((star) => (
-              <Star
-                key={star}
-                size={32}
-                fill={(hoverRating || rating) >= star ? '#eab308' : 'none'}
-                color={(hoverRating || rating) >= star ? '#eab308' : 'var(--text-secondary)'}
-                onMouseEnter={() => setHoverRating(star)}
-                onMouseLeave={() => setHoverRating(0)}
-                onClick={() => setRating(star)}
-                style={{ cursor: 'pointer', transition: 'all 0.2s' }}
-              />
             ))}
           </div>
-          <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
-            Your rating helps Tether AI suggest better suppliers in the future!
-          </p>
-        </div>
+          <p className="muted" style={{ marginTop: '0.4rem' }}>Ratings help you compare suppliers later.</p>
+        </section>
+      )}
 
-        <button 
-          onClick={handlePayment} 
-          disabled={paying || isBlocked}
-          className="btn-primary" 
-          style={{ width: '100%', padding: '1rem', fontSize: '1.1rem', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.5rem' }}
-        >
-          {paying ? <span className="spinner"></span>
-            : isRejected ? 'Invoice rejected'
-            : isBlocked ? 'Payment on hold: review required'
-            : <><CreditCard size={20} /> Pay ₹{Number(bill.amount).toFixed(2)}</>}
-        </button>
-      </div>
+      {error && <div className="error-message">{error}</div>}
+
+      <button onClick={pay} disabled={paying || isBlocked || isPaid || awaitingApproval || !mayPay} className="btn-primary btn-block">
+        {paying ? <span className="spinner" />
+          : isPaid ? 'Already paid'
+          : isRejected ? 'Invoice rejected'
+          : isBlocked ? 'On hold: review required'
+          : awaitingApproval ? (bill.approval ? `Waiting for ${ROLE_LABELS[bill.approval.nextRole]} approval` : 'Waiting for AI validation')
+          : !mayPay ? 'Only an admin or finance manager can pay'
+          : <><CreditCard size={18} /> Pay {money(bill.amount)}</>}
+      </button>
     </div>
   );
 }

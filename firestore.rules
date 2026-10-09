@@ -1,61 +1,203 @@
 rules_version = '2';
 
-// Deploy with: firebase deploy --only firestore:rules  (or paste into Firebase Console → Firestore → Rules)
+// Tether security rules.
+// Deploy: firebase deploy --only firestore:rules
+// Test:   npm run test:rules   (runs against the local Firebase emulator, never production)
+//
+// Model: every account belongs to an organisation (users/{uid}.orgId). A supplier is its own
+// organisation. A buyer organisation has team members with a staffRole:
+//   admin · procurement_officer · procurement_manager · finance_manager
+// Accounts created before teams existed have no orgId; they count as the admin of their own org.
+
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
     function signedIn() { return request.auth != null; }
     function uid() { return request.auth.uid; }
-    function role() { return get(/databases/$(database)/documents/users/$(uid())).data.role; }
-    function changes(fields) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(fields); }
-
-    match /users/{userId} {
-      // Profiles are readable by signed-in users so the AI relationship check can compare them
-      allow read: if signedIn();
-      allow write: if signedIn() && uid() == userId;
+    function me() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function isSupplier() { return signedIn() && me().role == 'supplier'; }
+    function isBuyer() { return signedIn() && me().role != 'supplier'; }
+    function myOrg() { return me().get('orgId', request.auth.uid); }
+    function myRole() { return isSupplier() ? 'supplier' : me().get('staffRole', 'admin'); }
+    function hasRole(roles) { return isBuyer() && myRole() in roles; }
+    function staffOf(org) { return isBuyer() && myOrg() == org; }
+    function managerOf(org) { return staffOf(org) && myRole() in ['admin', 'procurement_manager', 'finance_manager']; }
+    function adminOf(org) { return staffOf(org) && myRole() == 'admin'; }
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+    function onlyChanges(fields) { return changed().hasOnly(fields); }
+    function keeps(fields) { return !changed().hasAny(fields); }
+    function myEmail() { return request.auth.token.email.lower(); }
+    function invitedTo(org, role) {
+      let path = /databases/$(database)/documents/invites/$(request.auth.token.email.lower());
+      return exists(path) && get(path).data.orgId == org && get(path).data.staffRole == role && get(path).data.status == 'pending';
     }
 
+    // ── Users ────────────────────────────────────────────────────────────────
+    // Public profiles hold business details only. Bank account, PAN and IFSC live in
+    // users/{uid}/private, and other suppliers see only fingerprints and masked values.
+    match /users/{userId} {
+      allow read: if signedIn();
+
+      allow create: if signedIn() && uid() == userId && (
+        // Your own organisation (a supplier, or a new buyer company you administer)
+        (request.resource.data.role in ['consumer', 'supplier']
+          && request.resource.data.get('orgId', userId) == userId
+          && request.resource.data.get('staffRole', 'admin') == 'admin')
+        // Joining a buyer organisation that invited your email address
+        || (request.resource.data.role == 'consumer'
+          && request.resource.data.orgId != userId
+          && invitedTo(request.resource.data.orgId, request.resource.data.staffRole))
+      );
+
+      allow update: if signedIn() && (
+        // Your own profile, without changing who you are or which org/role you have
+        (uid() == userId && keeps(['role', 'orgId', 'staffRole']))
+        // One-time upgrade of an account created before organisations existed
+        || (uid() == userId && !('orgId' in resource.data) && resource.data.role != 'supplier'
+          && request.resource.data.orgId == userId && request.resource.data.staffRole == 'admin'
+          && onlyChanges(['orgId', 'staffRole']))
+        // An organisation admin changing a team member's role
+        || (resource.data.role != 'supplier' && adminOf(resource.data.get('orgId', userId))
+          && onlyChanges(['staffRole'])
+          && request.resource.data.staffRole in ['admin', 'procurement_officer', 'procurement_manager', 'finance_manager'])
+      );
+
+      match /private/{doc} {
+        allow read, write: if signedIn() && uid() == userId;
+      }
+    }
+
+    // ── Team invitations (document id = invited email, lower case) ─────────────
+    match /invites/{email} {
+      allow read: if signedIn() && (myEmail() == email || adminOf(resource.data.orgId));
+      allow create: if adminOf(request.resource.data.orgId) && request.resource.data.email == email
+        && request.resource.data.status == 'pending'
+        && request.resource.data.staffRole in ['admin', 'procurement_officer', 'procurement_manager', 'finance_manager'];
+      allow delete: if adminOf(resource.data.orgId);
+      allow update: if signedIn() && myEmail() == email && onlyChanges(['status', 'acceptedBy'])
+        && request.resource.data.status == 'accepted' && request.resource.data.acceptedBy == uid();
+    }
+
+    // ── Organisation settings (approval thresholds) ───────────────────────────
+    match /settings/{org} {
+      allow read: if staffOf(org);
+      allow write: if adminOf(org);
+    }
+
+    // ── Tenders ──────────────────────────────────────────────────────────────
     match /tenders/{id} {
       allow read: if signedIn();
-      allow create: if signedIn() && role() == 'consumer' && request.resource.data.buyerId == uid();
-      // Buyer manages the tender; suppliers may only bump the bid counter
-      allow update: if signedIn() && (resource.data.buyerId == uid() || (role() == 'supplier' && changes(['bidCount'])));
+      allow create: if hasRole(['admin', 'procurement_officer', 'procurement_manager'])
+        && request.resource.data.buyerId == myOrg() && request.resource.data.status == 'open';
+      allow update: if (staffOf(resource.data.buyerId) && keeps(['buyerId'])
+          // Only managers and admins can award
+          && (request.resource.data.status != 'awarded' || resource.data.status == 'awarded'
+              || myRole() in ['admin', 'procurement_manager']))
+        // A supplier placing a bid increments the counter by exactly one
+        || (isSupplier() && onlyChanges(['bidCount'])
+          && request.resource.data.bidCount == resource.data.get('bidCount', 0) + 1);
     }
 
+    // ── Bids ─────────────────────────────────────────────────────────────────
     match /bids/{id} {
-      allow read: if signedIn() && (resource.data.supplierId == uid() || resource.data.buyerId == uid());
-      allow create: if signedIn() && role() == 'supplier' && request.resource.data.supplierId == uid();
-      // Only the buyer changes bid status (award / reject)
-      allow update: if signedIn() && resource.data.buyerId == uid() && changes(['status']);
+      allow read: if signedIn() && (resource.data.supplierId == uid() || staffOf(resource.data.buyerId));
+      allow create: if isSupplier() && request.resource.data.supplierId == uid()
+        && request.resource.data.status == 'submitted'
+        && get(/databases/$(database)/documents/tenders/$(request.resource.data.tenderId)).data.buyerId == request.resource.data.buyerId
+        && get(/databases/$(database)/documents/tenders/$(request.resource.data.tenderId)).data.status == 'open';
+      // Suppliers cannot change a bid once sent; only managers award or reject
+      allow update: if staffOf(resource.data.buyerId) && myRole() in ['admin', 'procurement_manager'] && onlyChanges(['status']);
     }
 
+    // ── Contracts ────────────────────────────────────────────────────────────
     match /contracts/{id} {
-      allow read: if signedIn() && (resource.data.buyerId == uid() || resource.data.supplierId == uid());
-      allow create: if signedIn() && request.resource.data.buyerId == uid();
-      // Supplier can only advance the invoiced totals
-      allow update: if signedIn() && (resource.data.buyerId == uid()
-        || (resource.data.supplierId == uid() && changes(['quantityInvoiced', 'amountInvoiced'])));
+      allow read: if signedIn() && (resource.data.supplierId == uid() || staffOf(resource.data.buyerId));
+      allow create: if hasRole(['admin', 'procurement_manager']) && request.resource.data.buyerId == myOrg();
+      allow update: if (staffOf(resource.data.buyerId) && keeps(['buyerId', 'supplierId', 'agreedUnitPrice']))
+        // The supplier can only record what it has invoiced
+        || (resource.data.supplierId == uid() && onlyChanges(['quantityInvoiced', 'amountInvoiced']));
     }
 
+    // ── Invoices (bills) ─────────────────────────────────────────────────────
     match /bills/{id} {
-      allow read: if signedIn() && (resource.data.consumerId == uid() || resource.data.supplierId == uid());
-      allow create: if signedIn() && request.resource.data.supplierId == uid();
-      // Only the buyer pays, approves or rejects. A supplier cannot clear their own flagged invoice.
-      allow update: if signedIn() && resource.data.consumerId == uid();
+      allow read: if signedIn() && (resource.data.supplierId == uid() || staffOf(resource.data.consumerId));
+
+      // Suppliers send invoices but can never write validation or approval data
+      allow create: if signedIn() && request.resource.data.supplierId == uid()
+        && request.resource.data.status == 'unpaid'
+        && !('approval' in request.resource.data) && !('validatedBy' in request.resource.data)
+        && !('paidBy' in request.resource.data);
+
+      allow update: if staffOf(resource.data.consumerId)
+        && keeps(['supplierId', 'consumerId', 'amount', 'unitCost', 'quantityRequested', 'contractId', 'invoiceNumber', 'ocr'])
+        && (
+          // 1. Buyer-side AI validation, which starts the approval chain
+          (!('approval' in resource.data) && request.resource.data.approval.status == 'pending'
+            && onlyChanges(['analysis', 'reviewStatus', 'approval', 'validatedAt', 'validatedBy']))
+          // 2. An approval decision: only the role whose turn it is, or an admin
+          || ('approval' in resource.data && resource.data.approval.status == 'pending'
+            && (myRole() == 'admin' || myRole() == resource.data.approval.nextRole)
+            && onlyChanges(['approval', 'status', 'reviewStatus'])
+            && request.resource.data.status in ['unpaid', 'rejected'])
+          // 3. Risk review of AI flags (clear them, or reject the invoice)
+          || (onlyChanges(['reviewStatus', 'reviewedAt', 'reviewedBy', 'rejectReason', 'status'])
+            && request.resource.data.status in ['unpaid', 'rejected'])
+          // 4. Re-checking invoices created before AI checks existed
+          || (onlyChanges(['analysis', 'reviewStatus']) && resource.data.status != 'paid')
+          // 5. Payment: only after every approval, by an admin or finance manager
+          || (onlyChanges(['status', 'paidBy', 'paidAt']) && request.resource.data.status == 'paid'
+            && resource.data.status == 'unpaid'
+            && resource.data.get('approval', {}).get('status', '') == 'approved'
+            && myRole() in ['admin', 'finance_manager'])
+        );
     }
 
+    // ── Audit trail: append-only, readable by managers of the organisation ─────
+    match /auditLogs/{id} {
+      allow create: if signedIn() && request.resource.data.userId == uid()
+        && request.resource.data.createdAt == request.time;
+      allow read: if managerOf(resource.data.orgId);
+      allow update, delete: if false;
+    }
+
+    // ── Notifications: one document per recipient ─────────────────────────────
+    match /notifications/{id} {
+      allow create: if signedIn() && request.resource.data.createdBy == uid() && request.resource.data.read == false;
+      allow read, delete: if signedIn() && resource.data.userId == uid();
+      allow update: if signedIn() && resource.data.userId == uid() && onlyChanges(['read']);
+    }
+
+    // ── Derived risk data, private to the buyer organisation ──────────────────
+    match /fraudAlerts/{id} {
+      allow read: if staffOf(resource.data.orgId);
+      allow create: if staffOf(request.resource.data.orgId);
+      // Dismissing an alert is a manager decision
+      allow update: if staffOf(resource.data.orgId) && keeps(['orgId', 'key'])
+        && (request.resource.data.status == resource.data.status || managerOf(resource.data.orgId));
+    }
+    match /riskScores/{id} {
+      allow read: if staffOf(resource.data.orgId);
+      allow create, update: if staffOf(request.resource.data.orgId)
+        && (resource == null || resource.data.orgId == request.resource.data.orgId);
+    }
+
+    // ── Direct catalogue buying ───────────────────────────────────────────────
     match /requests/{id} {
-      allow read, update: if signedIn() && (resource.data.consumerId == uid() || resource.data.supplierId == uid());
-      allow create: if signedIn() && request.resource.data.consumerId == uid();
+      allow read, update: if signedIn() && (resource.data.supplierId == uid() || staffOf(resource.data.consumerId));
+      allow create: if staffOf(request.resource.data.consumerId);
     }
-
     match /products/{id} {
       allow read: if signedIn();
-      allow write: if signedIn() && (resource == null ? request.resource.data.supplierId == uid() : resource.data.supplierId == uid());
+      allow create: if isSupplier() && request.resource.data.supplierId == uid();
+      allow update, delete: if signedIn() && resource.data.supplierId == uid();
     }
-
     match /ratings/{id} {
       allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.consumerId == uid();
+      allow create: if staffOf(request.resource.data.consumerId);
+    }
+    match /limits/{org} {
+      allow read, write: if staffOf(org);
     }
   }
 }

@@ -1,234 +1,121 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useLocation, Link } from 'react-router-dom';
+import { doc, updateDoc } from 'firebase/firestore';
+import { Pencil } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../firebase';
-import { doc, updateDoc } from 'firebase/firestore';
-import { User, Mail, Building, Shield, Edit2, Check, X } from 'lucide-react';
-import { InfoTip } from './Guide';
+import { InfoTip, PageHeader } from './Guide';
+import { ROLE_LABELS } from '../security/roles';
+import IndustryPicker from './IndustryPicker';
 
 export default function Profile() {
-  const { currentUser, userData, setUserData } = useAuth();
+  const { currentUser, userData, setUserData, role } = useAuth();
+  const location = useLocation();
+
+  // Links like /profile#play-area jump straight to that section
+  useEffect(() => {
+    if (location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [location.hash]);
   const [editingName, setEditingName] = useState(false);
   const [newName, setNewName] = useState('');
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
 
-  const handleEditName = () => {
-    setNewName(userData?.companyName || '');
-    setEditingName(true);
-  };
-
-  const handleSaveName = async () => {
+  const saveName = async () => {
     if (!newName.trim()) return;
     setSaving(true);
     try {
       await updateDoc(doc(db, 'users', currentUser.uid), { companyName: newName.trim() });
       if (setUserData) setUserData(prev => ({ ...prev, companyName: newName.trim() }));
       setEditingName(false);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
     } catch (err) {
-      alert('Failed to update name: ' + err.message);
+      alert('Could not update name: ' + err.message);
     }
     setSaving(false);
   };
 
-  const initials = (userData?.companyName || currentUser?.email || 'US').substring(0, 2).toUpperCase();
-  const isSupplier = userData?.role === 'supplier';
-
-  const InfoRow = ({ icon: Icon, label, value, action }) => (
-    <div style={{
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      padding: '1.25rem 0',
-      borderBottom: '1px solid var(--border-color)',
-      gap: '1rem',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.875rem', flex: 1 }}>
-        <div style={{ color: 'var(--text-secondary)', flexShrink: 0 }}>
-          <Icon size={18} />
-        </div>
-        <div style={{ flex: 1 }}>
-          <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.125rem' }}>{label}</p>
-          <p style={{ fontWeight: '500' }}>{value}</p>
-        </div>
-      </div>
-      {action}
-    </div>
-  );
+  const name = userData?.companyName || currentUser?.email;
 
   return (
-    <div className="page-container" style={{ maxWidth: '560px' }}>
+    <div className="page-container narrow">
+      <PageHeader title="Profile" subtitle="Your company details." />
 
-      {/* Avatar Header */}
-      <div style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'flex-start',
-        gap: '1rem',
-        marginBottom: '2.5rem',
-        paddingBottom: '2.5rem',
-        borderBottom: '1px solid var(--border-color)',
-      }}>
-        <div style={{
-          width: '72px',
-          height: '72px',
-          borderRadius: '50%',
-          backgroundColor: 'var(--text-primary)',
-          color: 'var(--bg-color)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontSize: '1.5rem',
-          fontWeight: '700',
-          letterSpacing: '-0.02em',
-          flexShrink: 0,
-        }}>
-          {initials}
-        </div>
-        <div>
-          <h1 style={{ fontSize: '1.5rem', fontWeight: '700', letterSpacing: '-0.02em' }}>
-            {userData?.companyName || currentUser?.email}
-          </h1>
-          <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
-            <span style={{
-              padding: '0.2rem 0.75rem',
-              borderRadius: '9999px',
-              fontSize: '0.75rem',
-              fontWeight: '600',
-              textTransform: 'uppercase',
-              letterSpacing: '0.07em',
-              border: '1px solid var(--border-color)',
-              color: 'var(--text-secondary)'
-            }}>
-              {userData?.role}
-            </span>
-            <span style={{
-              padding: '0.2rem 0.75rem',
-              borderRadius: '9999px',
-              fontSize: '0.75rem',
-              fontWeight: '600',
-              border: '1px solid var(--border-color)',
-              color: 'var(--text-secondary)'
-            }}>
-              Active
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* Info rows */}
-      <div>
-        {/* Company Name — editable */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '1.25rem 0',
-          borderBottom: '1px solid var(--border-color)',
-          gap: '1rem',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.875rem', flex: 1 }}>
-            <div style={{ color: 'var(--text-secondary)', flexShrink: 0 }}><Building size={18} /></div>
-            <div style={{ flex: 1 }}>
-              <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.125rem' }}>Company Name</p>
-              {editingName ? (
-                <input
-                  autoFocus
-                  type="text"
-                  value={newName}
-                  onChange={e => setNewName(e.target.value)}
-                  className="form-input"
-                  style={{ padding: '0.375rem 0.625rem', fontSize: '0.9375rem', marginTop: '0.25rem' }}
-                  onKeyDown={e => { if (e.key === 'Enter') handleSaveName(); if (e.key === 'Escape') setEditingName(false); }}
-                />
-              ) : (
-                <p style={{ fontWeight: '500' }}>{userData?.companyName || '—'}</p>
-              )}
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0 }}>
+      <section className="card">
+        <div className="profile-head">
+          <span className="avatar avatar-lg">{(name || 'US').substring(0, 2).toUpperCase()}</span>
+          <div className="profile-name">
             {editingName ? (
-              <>
-                <button onClick={handleSaveName} disabled={saving} className="btn-primary" style={{ padding: '0.375rem 0.75rem', minHeight: 'unset', margin: 0, display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
-                  <Check size={14} /> {saving ? '…' : 'Save'}
-                </button>
-                <button onClick={() => setEditingName(false)} className="btn-primary" style={{ padding: '0.375rem 0.75rem', minHeight: 'unset', margin: 0, backgroundColor: 'transparent', color: 'var(--text-primary)', display: 'inline-flex', alignItems: 'center' }}>
-                  <X size={14} />
-                </button>
-              </>
+              <div className="inline-edit">
+                <input autoFocus className="form-input" value={newName} onChange={e => setNewName(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') saveName(); if (e.key === 'Escape') setEditingName(false); }} />
+                <button className="btn-primary btn-sm" style={{ marginTop: 0 }} onClick={saveName} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+                <button className="btn-secondary btn-sm" onClick={() => setEditingName(false)}>Cancel</button>
+              </div>
             ) : (
-              <button onClick={handleEditName} title="Edit company name" aria-label="Edit company name" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', padding: '0.25rem' }}>
-                <Edit2 size={15} />
-              </button>
+              <>
+                <h2>{name}</h2>
+                <button className="icon-btn" onClick={() => { setNewName(userData?.companyName || ''); setEditingName(true); }}
+                  title="Edit company name" aria-label="Edit company name"><Pencil size={15} /></button>
+              </>
             )}
+            <span className="status-pill">{ROLE_LABELS[role] || 'Buyer'}</span>
           </div>
         </div>
+        <dl className="detail-list">
+          <div><dt>Email</dt><dd>{currentUser?.email}</dd></div>
+          <div><dt>About</dt><dd>{userData?.description || '—'}</dd></div>
+          <div><dt>Account ID</dt><dd className="mono">{currentUser?.uid?.substring(0, 16)}…</dd></div>
+        </dl>
+      </section>
 
-        <InfoRow icon={Mail} label="Email Address" value={currentUser?.email} />
-        <InfoRow icon={Shield} label="Account ID" value={currentUser?.uid?.substring(0, 16) + '…'} />
-        <InfoRow icon={User} label="Role" value={userData?.role ? userData.role.charAt(0).toUpperCase() + userData.role.slice(1) : '—'} />
-      </div>
-
-      <BusinessDetails currentUser={currentUser} userData={userData} setUserData={setUserData} />
-
-      {saved && (
-        <div style={{ marginTop: '1.5rem', padding: '0.75rem 1rem', borderRadius: '0.5rem', border: '1px solid var(--border-color)', color: 'var(--text-primary)', fontSize: '0.875rem', fontWeight: '500' }}>
-          ✓ Company name updated successfully
-        </div>
+      {userData?.role === 'supplier' && (
+        <PlayArea currentUser={currentUser} userData={userData} setUserData={setUserData} />
       )}
+
+      <section className="card">
+        <h3 className="section-title">{userData?.role === 'supplier' ? 'Verification (KYC)' : 'Company details'}<InfoTip term="businessDetails" /></h3>
+        <p className="muted" style={{ marginBottom: '0.75rem' }}>
+          {userData?.role === 'supplier'
+            ? 'GSTIN, PAN, bank and director details, checked for format and compared with other suppliers. Bank and PAN numbers stay private.'
+            : 'Your company identity, used to spot suppliers linked to your organisation. Bank and PAN numbers stay private.'}
+        </p>
+        <Link to="/verification" className="btn-secondary">{userData?.kyc ? 'View or update details' : 'Add details'}</Link>
+      </section>
     </div>
   );
 }
 
-const BUSINESS_FIELDS = [
-  { key: 'address', label: 'Registered address', placeholder: '12 MG Road, Chennai 600001' },
-  { key: 'phone', label: 'Phone', placeholder: '+91 98xxxxxxxx' },
-  { key: 'gstin', tip: 'gstin', label: 'GSTIN', placeholder: '33ABCDE1234F1Z5' },
-  { key: 'bankAccount', label: 'Bank account number', placeholder: 'Used only for matching, never shown to others' },
-  { key: 'keyPeople', tip: 'keyPeople', label: 'Directors / key people', placeholder: 'Comma separated, e.g. Ravi Kumar, Anita Rao' }
-];
-
-// Used by the AI relationship check: a supplier that shares an address, bank account,
-// phone, GSTIN or director with the buyer (or with a rival bidder) is flagged
-function BusinessDetails({ currentUser, userData, setUserData }) {
-  const [form, setForm] = useState(() => Object.fromEntries(BUSINESS_FIELDS.map(f => [f.key, userData?.[f.key] || ''])));
+// Industries a supplier serves; decides which tenders they see
+function PlayArea({ currentUser, userData, setUserData }) {
+  const [industries, setIndustries] = useState(userData?.industries || []);
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState('');
+  const [message, setMessage] = useState(null);
+  const changed = JSON.stringify([...industries].sort()) !== JSON.stringify([...(userData?.industries || [])].sort());
 
-  const handleSave = async (e) => {
-    e.preventDefault();
+  const save = async () => {
+    if (!industries.length) { setMessage({ ok: false, text: 'Pick at least one industry.' }); return; }
     setSaving(true);
-    setMessage('');
+    setMessage(null);
     try {
-      const data = Object.fromEntries(Object.entries(form).map(([k, v]) => [k, v.trim()]));
-      await updateDoc(doc(db, 'users', currentUser.uid), data);
-      if (setUserData) setUserData(prev => ({ ...prev, ...data }));
-      setMessage('Business details saved.');
+      await updateDoc(doc(db, 'users', currentUser.uid), { industries });
+      if (setUserData) setUserData(prev => ({ ...prev, industries }));
+      setMessage({ ok: true, text: 'Saved. Tenders now match your play area.' });
     } catch (err) {
-      setMessage('Failed to save: ' + err.message);
+      setMessage({ ok: false, text: 'Could not save: ' + err.message });
     }
     setSaving(false);
   };
 
   return (
-    <form onSubmit={handleSave} className="bid-card" style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      <div>
-        <h3 style={{ fontWeight: 600 }}>Business details<InfoTip term="businessDetails" /></h3>
-        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
-          Optional, but it lets Tether AI detect hidden relationships, for example a supplier registered at the same address or
-          bank account as a buyer's company or as a rival bidder. These details are only used for matching.
-        </p>
+    <section className="card" id="play-area">
+      <h3 className="section-title">Play area</h3>
+      <p className="muted" style={{ marginBottom: '1rem' }}>
+        The industries you supply. You only see tenders for products in these industries.
+      </p>
+      <IndustryPicker value={industries} onChange={setIndustries} />
+      <div className="form-actions">
+        {message && <span className={message.ok ? 'text-success' : 'text-error'}>{message.text}</span>}
+        <button className="btn-primary" onClick={save} disabled={saving || !changed}>{saving ? 'Saving…' : 'Save play area'}</button>
       </div>
-      {BUSINESS_FIELDS.map(f => (
-        <div className="form-group" key={f.key}>
-          <label className="form-label" htmlFor={`bd-${f.key}`}>{f.label}{f.tip && <InfoTip term={f.tip} label={f.label} />}</label>
-          <input id={`bd-${f.key}`} className="form-input" placeholder={f.placeholder}
-            value={form[f.key]} onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))} />
-        </div>
-      ))}
-      <button className="btn-primary" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save business details'}</button>
-      {message && <p style={{ fontSize: '0.85rem' }}>{message}</p>}
-    </form>
+    </section>
   );
 }

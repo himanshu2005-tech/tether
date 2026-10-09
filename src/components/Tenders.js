@@ -4,15 +4,18 @@ import { Sparkles, Plus, ChevronRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../firebase';
 import { collection, query, where, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore';
-import { PREDEFINED_PRODUCTS } from '../constants/products';
+import { INDUSTRIES, PREDEFINED_PRODUCTS, industryOf, industryName, tenderIndustry, inPlayArea } from '../constants/products';
 import { draftTender } from '../api';
 import { PageHeader, InfoTip } from './Guide';
+import { logAudit } from '../services/audit';
+import { can } from '../security/roles';
+import { notify } from '../services/notify';
 
-const EMPTY = { title: '', productName: '', quantity: '', unit: 'units', maxUnitPrice: '', bidDeadline: '', deliveryBy: '', terms: '' };
+const EMPTY = { title: '', productName: '', industry: '', quantity: '', unit: 'units', maxUnitPrice: '', bidDeadline: '', deliveryBy: '', terms: '' };
 const UNITS = ['units', 'kg', 'tons', 'liters', 'meters', 'boxes'];
 
 export default function Tenders() {
-  const { currentUser, userData } = useAuth();
+  const { currentUser, userData, orgId, role } = useAuth();
   const isBuyer = userData?.role === 'consumer';
   const [tenders, setTenders] = useState([]);
   const [myBidTenderIds, setMyBidTenderIds] = useState(new Set());
@@ -30,15 +33,16 @@ export default function Tenders() {
     if (!currentUser) return;
     // Buyers see their own tenders; suppliers see every open tender
     const q = isBuyer
-      ? query(collection(db, 'tenders'), where('buyerId', '==', currentUser.uid))
+      ? query(collection(db, 'tenders'), where('buyerId', '==', orgId))
       : query(collection(db, 'tenders'), where('status', '==', 'open'));
     return onSnapshot(q, (snapshot) => {
       const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
       list.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-      setTenders(list);
+      // Suppliers only see tenders in their play area (the industries they picked)
+      setTenders(isBuyer ? list : list.filter(t => inPlayArea(t, userData)));
       setLoading(false);
     });
-  }, [currentUser, isBuyer]);
+  }, [currentUser, isBuyer, userData, orgId]);
 
   useEffect(() => {
     if (!currentUser || isBuyer) return;
@@ -49,6 +53,11 @@ export default function Tenders() {
   }, [currentUser, isBuyer]);
 
   const set = (field) => (e) => setForm(prev => ({ ...prev, [field]: e.target.value }));
+  // Picking a known product fills in its industry; the buyer can still change it
+  const setProduct = (e) => {
+    const productName = e.target.value;
+    setForm(prev => ({ ...prev, productName, industry: industryOf(productName) || prev.industry }));
+  };
 
   const reset = () => {
     setComposing(false);
@@ -67,6 +76,7 @@ export default function Tenders() {
       setForm({
         title: d.title || '',
         productName: d.productName || '',
+        industry: industryOf(d.productName) || '',
         quantity: d.quantity ?? '',
         unit: d.unit || 'units',
         maxUnitPrice: d.maxUnitPrice ?? '',
@@ -87,18 +97,20 @@ export default function Tenders() {
     e.preventDefault();
     const quantity = parseInt(form.quantity, 10);
     const maxUnitPrice = parseFloat(form.maxUnitPrice);
-    if (!form.title || !form.productName || isNaN(quantity) || isNaN(maxUnitPrice) || !form.bidDeadline || !form.deliveryBy) {
+    if (!form.title || !form.productName || !form.industry || isNaN(quantity) || isNaN(maxUnitPrice) || !form.bidDeadline || !form.deliveryBy) {
       setError('A few details are missing. Check the highlighted fields.');
       return;
     }
     setIsSubmitting(true);
     setError('');
     try {
-      await addDoc(collection(db, 'tenders'), {
-        buyerId: currentUser.uid,
+      const ref = await addDoc(collection(db, 'tenders'), {
+        buyerId: orgId,
+        createdBy: currentUser.uid,
         buyerName: userData?.companyName || currentUser.email,
         title: form.title,
         productName: form.productName,
+        industry: form.industry,
         quantity,
         unit: form.unit,
         maxUnitPrice,
@@ -108,6 +120,16 @@ export default function Tenders() {
         status: 'open',
         bidCount: 0,
         createdAt: serverTimestamp()
+      });
+      await logAudit({
+        action: 'TENDER_CREATED', entityType: 'tender', entityId: ref.id, entityLabel: form.title,
+        next: { productName: form.productName, industry: form.industry, quantity, maxUnitPrice }
+      });
+      // Suppliers whose play area covers this industry hear about it
+      await notify({ industry: form.industry }, {
+        kind: 'new_tender', severity: 'info', title: 'New tender in your play area',
+        message: `${userData?.companyName || 'A buyer'} needs ${quantity} ${form.unit} of ${form.productName}. Bids close ${form.bidDeadline}.`,
+        entityType: 'tender', entityId: ref.id, link: `/tenders/${ref.id}`
       });
       reset();
     } catch (err) {
@@ -121,11 +143,12 @@ export default function Tenders() {
   return (
     <div className="page-container">
       <PageHeader
-        title={isBuyer ? 'Tenders' : 'Open tenders'}
+        title={isBuyer ? 'Tenders' : 'Open tenders'}
+
         subtitle={isBuyer
           ? 'Tell us what you need. Suppliers compete, and AI helps you pick.'
           : 'Requirements posted by buyers. Open one to bid, with AI price guidance.'}
-        action={isBuyer && !composing && (
+        action={isBuyer && !composing && can.createTender(role) && (
           <button className="btn-primary" style={{ marginTop: 0 }} onClick={() => setComposing(true)}>
             <Plus size={16} /> New tender
           </button>
@@ -164,8 +187,14 @@ export default function Tenders() {
                   <input className={'form-input' + missing(form.title)} value={form.title} onChange={set('title')} />
                 </Field>
                 <Field label="Product">
-                  <input className={'form-input' + missing(form.productName)} value={form.productName} onChange={set('productName')} list="tender-products" />
+                  <input className={'form-input' + missing(form.productName)} value={form.productName} onChange={setProduct} list="tender-products" />
                   <datalist id="tender-products">{PREDEFINED_PRODUCTS.map(p => <option key={p} value={p} />)}</datalist>
+                </Field>
+                <Field label="Industry">
+                  <select className={'form-input' + missing(form.industry)} value={form.industry} onChange={set('industry')}>
+                    <option value="">Choose…</option>
+                    {INDUSTRIES.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+                  </select>
                 </Field>
                 <Field label="Quantity">
                   <div style={{ display: 'flex', gap: '0.5rem' }}>
@@ -200,11 +229,23 @@ export default function Tenders() {
         </div>
       )}
 
+      {!isBuyer && (
+        userData?.industries?.length ? (
+          <p className="muted play-area-note">
+            Showing tenders for {userData.industries.map(industryName).join(', ')}. <Link to="/profile#play-area">Change</Link>
+          </p>
+        ) : (
+          <div className="notice">
+            You haven't chosen a play area, so you're seeing every tender. <Link to="/profile#play-area">Pick your industries</Link> to see only the ones you can supply.
+          </div>
+        )
+      )}
+
       {loading ? (
         <div className="empty-state"><span className="spinner" /></div>
       ) : tenders.length === 0 ? (
         <div className="empty-state">
-          {isBuyer ? 'No tenders yet. Create one and suppliers will start bidding.' : 'No open tenders right now. Check back soon.'}
+          {isBuyer ? 'No tenders yet. Create one and suppliers will start bidding.' : 'No open tenders in your play area right now. Check back soon.'}
         </div>
       ) : (
         <div className="list">
@@ -212,6 +253,7 @@ export default function Tenders() {
             <Link key={t.id} to={`/tenders/${t.id}`} className="list-row">
               <div className="list-main">
                 <div className="list-title">{t.title}</div>
+                {tenderIndustry(t) && <div className="list-tag">{industryName(tenderIndustry(t))}</div>}
                 <div className="list-sub">
                   {isBuyer ? t.productName : `${t.buyerName} · ${t.productName}`} · {t.quantity} {t.unit} · up to ₹{Number(t.maxUnitPrice).toLocaleString('en-IN')}
                 </div>

@@ -1,6 +1,6 @@
 import { initializeApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { getAuth, connectAuthEmulator } from "firebase/auth";
+import { getFirestore, connectFirestoreEmulator } from "firebase/firestore";
 
 // TODO: Replace the following with your app's Firebase project configuration
 const firebaseConfig = {
@@ -14,9 +14,18 @@ const firebaseConfig = {
 };
 
 // Initialize Firebase
-const app = initializeApp(firebaseConfig);
+// With the emulators, use a "demo-" project so nothing can reach production by accident
+const useEmulators = process.env.REACT_APP_USE_EMULATORS === 'true';
+const app = initializeApp(useEmulators ? { ...firebaseConfig, projectId: 'demo-tether' } : firebaseConfig);
 
 // Initialize Firebase Authentication and get a reference to the service
 export const auth = getAuth(app);
 export const db = getFirestore(app);
+
+// Local development and testing against the Firebase emulators (never touches production data):
+// set REACT_APP_USE_EMULATORS=true and run `npm run emulators`
+if (useEmulators) {
+  connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
+  connectFirestoreEmulator(db, '127.0.0.1', 8080);
+}
 export default app;

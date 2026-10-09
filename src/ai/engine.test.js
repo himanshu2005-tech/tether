@@ -64,3 +64,22 @@ test('bid analysis catches copied proposals and linked bidders', () => {
   assert.ok(a.flags.some(f => f.type === 'linked_bidders'));
   assert.strictEqual(r.recommendedBidId, 'c');
 });
+
+test('bid evaluation explains the score and lists every check', () => {
+  const r = analyzeBids({
+    tender: { title: 'Laptops', productName: 'Laptops', quantity: 100, unit: 'units', maxUnitPrice: 250000 },
+    bids: [{ id: 'x', supplierId: 'S', supplierName: 'Apple reseller', unitPrice: 200000, quantity: 80, deliveryDays: 30,
+      proposal: 'We are the third party providers of apple but believe us' }],
+    proposalReviews: { x: 'Claims to be an unofficial third-party seller and asks to be trusted without proof.' }
+  });
+  const bid = r.bids[0];
+  assert.strictEqual(r.singleBid, true);
+  assert.deepStrictEqual(bid.breakdown.map(p => p.weight), [55, 20, 25]);
+  assert.strictEqual(bid.breakdown.reduce((s, p) => s + p.points, 0), bid.valueScore);
+  const check = (label) => bid.checks.find(c => c.label === label).status;
+  assert.strictEqual(check('Can supply the full quantity'), 'fail');
+  assert.strictEqual(check('Proposal is clear and credible'), 'fail');
+  assert.strictEqual(check('Within your maximum price'), 'pass');
+  assert.strictEqual(check('Proposal written independently'), 'unknown'); // needs two bids
+  assert.ok(bid.flags.some(f => f.type === 'weak_proposal'));
+});

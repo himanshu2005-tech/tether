@@ -200,3 +200,52 @@ async function briefing({ role, name, facts }) {
 export { draftTender };
 export { bidGuidance };
 export { briefing };
+
+// Reads each bid proposal and returns { [bidId]: concern } for the ones that raise questions.
+// Returns null when the AI is unavailable, so the check is shown as "not run" rather than "passed".
+async function reviewProposals(tender, bids) {
+  const withText = bids.filter(b => (b.proposal || '').trim());
+  if (!withText.length) return {};
+  const out = await chat([
+    {
+      role: 'system',
+      content: 'You review supplier bid proposals for a procurement team. For each proposal, decide if it raises a real concern: ' +
+        'vague or unverifiable claims, asking to be trusted without evidence, being an unofficial reseller or third party for a brand, ' +
+        'ignoring the contract terms, unprofessional wording, or contradictions. Ordinary short proposals are fine. ' +
+        'Reply with JSON only: {"reviews":[{"id":string,"concern":string|null}]}. ' +
+        'concern is one plain sentence a student would understand, or null if the proposal is fine.'
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        tender: { product: tender.productName, quantity: tender.quantity, terms: tender.terms },
+        proposals: withText.map(b => ({ id: b.id, supplier: b.supplierName, text: b.proposal.slice(0, 1500) }))
+      })
+    }
+  ], { json: true, maxTokens: 500 });
+  const parsed = parseJson(out);
+  if (!parsed?.reviews) return null;
+  return Object.fromEntries(parsed.reviews.filter(r => r.concern).map(r => [r.id, r.concern]));
+}
+
+export { reviewProposals };
+
+// Turns raw OCR text into invoice fields. Used only to fill gaps the rule-based parser left,
+// and the UI marks those fields so the user checks them.
+async function structureInvoice(text, knownProducts = []) {
+  const out = await chat([
+    {
+      role: 'system',
+      content: 'Extract invoice fields from OCR text. Reply with JSON only using exactly these keys: ' +
+        '{"supplierName":string|null,"invoiceNumber":string|null,"invoiceDate":"YYYY-MM-DD"|null,"poNumber":string|null,' +
+        '"items":string|null,"quantity":number|null,"unitPrice":number|null,"subtotal":number|null,"tax":number|null,' +
+        '"taxRate":number|null,"extraCharges":number|null,"total":number|null}. ' +
+        'Copy values exactly as printed; use null when a value is not in the text. Never guess numbers. ' +
+        (knownProducts.length ? `If the item matches one of these products use that name: ${knownProducts.slice(0, 120).join(', ')}.` : '')
+    },
+    { role: 'user', content: String(text).slice(0, 6000) }
+  ], { json: true, maxTokens: 400 });
+  return parseJson(out);
+}
+
+export { structureInvoice };

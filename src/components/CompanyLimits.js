@@ -1,125 +1,81 @@
 import React, { useState, useEffect } from 'react';
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../firebase';
-import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { PREDEFINED_PRODUCTS } from '../constants/products';
+import { INDUSTRIES } from '../constants/products';
+import { PageHeader } from './Guide';
 
 export default function CompanyLimits() {
-  const { currentUser } = useAuth();
+  const { currentUser, orgId } = useAuth();
   const [limits, setLimits] = useState({});
   const [loading, setLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState(null);
+  // Industries that already had limits when the page loaded start expanded
+  const [startOpen, setStartOpen] = useState([]);
 
   useEffect(() => {
-    async function fetchLimits() {
-      if (!currentUser) return;
-      try {
-        const docRef = doc(db, 'limits', currentUser.uid);
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          setLimits(docSnap.data().limits || {});
-        }
-      } catch (err) {
-        console.error("Failed to fetch limits:", err);
-      }
-      setLoading(false);
-    }
-    fetchLimits();
-  }, [currentUser]);
-
-  const handleLimitChange = (productName, value) => {
-    setLimits(prev => ({
-      ...prev,
-      [productName]: value
-    }));
-  };
+    if (!currentUser) return;
+    getDoc(doc(db, 'limits', orgId))
+      .then(snap => {
+        const saved = snap.exists() ? snap.data().limits || {} : {};
+        setLimits(saved);
+        setStartOpen(INDUSTRIES.filter(i => i.products.some(p => saved[p])).map(i => i.id));
+      })
+      .catch(err => console.error('Failed to fetch limits:', err))
+      .finally(() => setLoading(false));
+  }, [currentUser, orgId]);
 
   const handleSave = async (e) => {
     e.preventDefault();
-    setError('');
-    setSuccess('');
-    setIsSaving(true);
-    
-    // Clean up empty limits before saving
-    const cleanedLimits = {};
-    Object.keys(limits).forEach(key => {
-      const val = parseFloat(limits[key]);
-      if (!isNaN(val) && val > 0) {
-        cleanedLimits[key] = val;
-      }
+    setSaving(true);
+    setMessage(null);
+    const cleaned = {};
+    Object.entries(limits).forEach(([k, v]) => {
+      const n = parseFloat(v);
+      if (!isNaN(n) && n > 0) cleaned[k] = n;
     });
-
     try {
-      await setDoc(doc(db, 'limits', currentUser.uid), {
-        limits: cleanedLimits,
-        updatedAt: serverTimestamp()
-      });
-      setSuccess("Limits saved successfully!");
+      await setDoc(doc(db, 'limits', orgId), { limits: cleaned, updatedAt: serverTimestamp() });
+      setMessage({ ok: true, text: 'Limits saved.' });
     } catch (err) {
-      setError("Failed to save limits: " + err.message);
+      setMessage({ ok: false, text: 'Could not save: ' + err.message });
     }
-    setIsSaving(false);
+    setSaving(false);
   };
 
-  if (loading) {
-    return (
-      <div className="page-container" style={{ alignItems: 'center', paddingTop: '4rem' }}>
-        <span className="spinner" style={{ width: '2rem', height: '2rem' }}></span>
-      </div>
-    );
-  }
+  if (loading) return <div className="page-container"><div className="empty-state"><span className="spinner" /></div></div>;
 
   return (
-    <div className="page-container">
-      <div className="page-header" style={{ marginBottom: '2rem' }}>
-        <h2 style={{ fontSize: '2.5rem', fontWeight: '700' }}>Company Limits</h2>
-        <p style={{ color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
-          Set the maximum price per unit you are willing to spend for these products. 
-          We'll warn you if a supplier's price exceeds your limit.
-        </p>
-      </div>
+    <div className="page-container narrow">
+      <PageHeader title="Spending limits" subtitle="The most you'll pay per unit when buying from the catalogue. Leave blank for no limit." />
 
-      <div className="form-container" style={{ padding: '2rem', border: '1px solid var(--border-color)' }}>
-        {error && <div className="error-message">{error}</div>}
-        {success && <div style={{ color: 'green', marginBottom: '1.5rem', fontWeight: '500' }}>{success}</div>}
-        
-        <form onSubmit={handleSave}>
-          <div className="limits-grid">
-            {PREDEFINED_PRODUCTS.map(product => (
-              <div key={product} style={{ 
-                display: 'flex', 
-                justifyContent: 'space-between', 
-                alignItems: 'center',
-                padding: '1rem',
-                borderBottom: '1px solid var(--border-color)'
-              }}>
-                <span style={{ fontWeight: '500' }}>{product}</span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span>₹</span>
-                  <input 
-                    type="number" 
-                    className="form-input" 
-                    style={{ width: '120px', textAlign: 'right' }}
-                    min="0"
-                    step="0.01"
-                    placeholder="No limit"
-                    value={limits[product] || ''}
-                    onChange={(e) => handleLimitChange(product, e.target.value)}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div style={{ marginTop: '2rem', display: 'flex', justifyContent: 'flex-end' }}>
-            <button disabled={isSaving} className="btn-primary" type="submit" style={{ padding: '0.75rem 2rem' }}>
-              {isSaving ? <span className="spinner"></span> : 'Save Limits'}
-            </button>
-          </div>
-        </form>
-      </div>
+      <form onSubmit={handleSave}>
+        {INDUSTRIES.map(ind => (
+          <details key={ind.id} className="group-block" open={startOpen.includes(ind.id)}>
+            <summary>
+              <span>{ind.name}</span>
+              <span className="muted">{ind.products.filter(p => limits[p]).length || 'No'} limit{ind.products.filter(p => limits[p]).length === 1 ? '' : 's'} set</span>
+            </summary>
+            <div className="list">
+              {ind.products.map(product => (
+                <label key={product} className="list-row">
+                  <span className="list-title">{product}</span>
+                  <span className="input-prefix">
+                    <span>₹</span>
+                    <input type="number" className="form-input" min="0" step="0.01" placeholder="No limit"
+                      value={limits[product] || ''} onChange={e => setLimits(prev => ({ ...prev, [product]: e.target.value }))} />
+                  </span>
+                </label>
+              ))}
+            </div>
+          </details>
+        ))}
+        <div className="form-actions">
+          {message && <span className={message.ok ? 'text-success' : 'text-error'}>{message.text}</span>}
+          <button disabled={saving} className="btn-primary" type="submit">{saving ? 'Saving…' : 'Save limits'}</button>
+        </div>
+      </form>
     </div>
   );
 }

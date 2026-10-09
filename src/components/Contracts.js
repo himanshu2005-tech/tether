@@ -3,21 +3,26 @@ import { useAuth } from '../context/AuthContext';
 import { analyzeInvoice } from '../api';
 import { PageHeader, RiskBadge, FlagList, AiTag } from './Guide';
 import { db } from '../firebase';
+import { Upload } from 'lucide-react';
+import InvoiceUpload from './InvoiceUpload';
+import { logAudit } from '../services/audit';
+import { notify } from '../services/notify';
 import { collection, query, where, onSnapshot, addDoc, doc, updateDoc, increment, serverTimestamp } from 'firebase/firestore';
 
 export default function Contracts() {
-  const { currentUser, userData } = useAuth();
+  const { currentUser, userData, orgId } = useAuth();
   const isSupplier = userData?.role === 'supplier';
   const [contracts, setContracts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [invoiceForm, setInvoiceForm] = useState({});
   const [submitting, setSubmitting] = useState({});
   const [lastResult, setLastResult] = useState({});
+  const [uploadFor, setUploadFor] = useState(null);
 
   useEffect(() => {
     if (!currentUser) return;
     const field = isSupplier ? 'supplierId' : 'buyerId';
-    const q = query(collection(db, 'contracts'), where(field, '==', currentUser.uid));
+    const q = query(collection(db, 'contracts'), where(field, '==', isSupplier ? currentUser.uid : orgId));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
       list.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
@@ -25,7 +30,7 @@ export default function Contracts() {
       setLoading(false);
     });
     return unsubscribe;
-  }, [currentUser, isSupplier]);
+  }, [currentUser, isSupplier, orgId]);
 
   const updateField = (contractId, field, value) => {
     setInvoiceForm(prev => ({ ...prev, [contractId]: { ...prev[contractId], [field]: value } }));
@@ -72,7 +77,7 @@ export default function Contracts() {
 
       // Same shape as existing bills so Payments/Checkout keep working,
       // plus contractId so invoices can be validated against agreed terms
-      await addDoc(collection(db, 'bills'), {
+      const ref = await addDoc(collection(db, 'bills'), {
         contractId: c.id,
         supplierId: c.supplierId,
         consumerId: c.buyerId,
@@ -86,12 +91,24 @@ export default function Contracts() {
         description: description,
         status: 'unpaid',
         analysis: analysis,
-        reviewStatus: !analysis ? 'unchecked' : analysis.level === 'clear' ? 'auto_cleared' : 'pending_review',
+        // The buyer re-validates every invoice on arrival; this is the supplier's own pre-check
+        reviewStatus: 'awaiting_validation',
+        source: 'manual',
+        submittedBy: currentUser.uid,
         createdAt: serverTimestamp()
       });
       await updateDoc(doc(db, 'contracts', c.id), {
         quantityInvoiced: increment(quantity),
         amountInvoiced: increment(baseAmount + extraCharges)
+      });
+      await logAudit({
+        action: 'INVOICE_UPLOADED', entityType: 'invoice', entityId: ref.id, entityLabel: `#${ref.id.slice(0, 8).toUpperCase()}`, orgId: c.buyerId,
+        next: { amount: baseAmount + extraCharges, quantity, unitPrice: unitCost, source: 'manual entry' }, meta: { contractId: c.id }
+      });
+      await notify({ orgId: c.buyerId, roles: ['procurement_officer', 'procurement_manager', 'admin'] }, {
+        kind: 'invoice_uploaded', severity: 'info', title: 'Invoice received',
+        message: `${userData?.companyName || 'A supplier'} invoiced ₹${(baseAmount + extraCharges).toLocaleString('en-IN')} on "${c.title}".`,
+        entityType: 'invoice', entityId: ref.id, link: '/approvals'
       });
       setInvoiceForm(prev => ({ ...prev, [c.id]: {} }));
       setLastResult(prev => ({ ...prev, [c.id]: analysis || { unchecked: true } }));
@@ -112,14 +129,15 @@ export default function Contracts() {
   return (
     <div className="page-container">
       <PageHeader
-        title="Contracts"
+        title="Contracts"
+
         subtitle={isSupplier
           ? 'Contracts you have won. Every invoice you raise is checked by AI against the agreed terms.'
           : 'Agreed prices and quantities. AI checks each supplier invoice against them before you pay.'}
       />
 
       {contracts.length === 0 ? (
-        <div style={{ padding: '3rem', textAlign: 'center', border: '1px dashed var(--border-color)', color: 'var(--text-secondary)' }}>
+        <div className="empty-state">
           {isSupplier ? 'You have not been awarded any contracts yet.' : 'Award a tender to create a contract.'}
         </div>
       ) : (
@@ -156,7 +174,7 @@ export default function Contracts() {
                 {lastResult[c.id] && (
                   <div className="ai-panel" style={{ marginTop: '1rem' }}>
                     {lastResult[c.id].unchecked ? (
-                      <p>Invoice sent, but the AI check could not run (check your internet connection). The buyer can run it later from the Risk Center.</p>
+                      <p>Invoice sent. Your pre-check could not run, but the buyer's system validates every invoice when it arrives.</p>
                     ) : (
                       <>
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -170,7 +188,19 @@ export default function Contracts() {
                   </div>
                 )}
 
-                {isSupplier && c.status === 'active' && (
+                {isSupplier && c.status === 'active' && uploadFor === c.id && (
+                  <InvoiceUpload contract={c} currentUser={currentUser} userData={userData}
+                    onClose={() => setUploadFor(null)}
+                    onSubmitted={(analysis) => { setUploadFor(null); setLastResult(prev => ({ ...prev, [c.id]: analysis || { unchecked: true } })); }} />
+                )}
+
+                {isSupplier && c.status === 'active' && uploadFor !== c.id && (
+                  <button className="btn-secondary" style={{ marginTop: '1rem' }} onClick={() => setUploadFor(c.id)}>
+                    <Upload size={15} /> Upload invoice (PDF or image)
+                  </button>
+                )}
+
+                {isSupplier && c.status === 'active' && uploadFor !== c.id && (
                   <div style={{ marginTop: '1rem', display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
                     <div className="form-group" style={{ flex: 1, minWidth: '120px' }}>
                       <label className="form-label">Quantity</label>
@@ -188,7 +218,7 @@ export default function Contracts() {
                         value={form.extra || ''} onChange={e => updateField(c.id, 'extra', e.target.value)} />
                     </div>
                     <button className="btn-primary" disabled={submitting[c.id]} onClick={() => handleRaiseInvoice(c)} style={{ marginTop: 0 }}>
-                      {submitting[c.id] ? 'Checking…' : 'Raise Invoice'}
+                      {submitting[c.id] ? 'Checking…' : 'Or enter manually'}
                     </button>
                   </div>
                 )}

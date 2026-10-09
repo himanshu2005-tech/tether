@@ -20,7 +20,10 @@
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
-    "test:ai": "react-scripts test --watchAll=false src/ai"
+    "test:ai": "react-scripts test --watchAll=false src/ai src/constants",
+    "emulators": "firebase emulators:start --only auth,firestore --project demo-tether",
+    "test:rules": "firebase emulators:exec --only auth,firestore --project demo-tether \"react-scripts test --watchAll=false --runInBand src/integration\"",
+    "test:all": "react-scripts test --watchAll=false src/ai src/constants src/risk && npm run test:rules"
   },
   "eslintConfig": {
     "extends": [

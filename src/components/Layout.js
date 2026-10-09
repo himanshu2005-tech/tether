@@ -1,221 +1,185 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Outlet, Link, NavLink, useNavigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { Outlet, Link, NavLink, useNavigate, useLocation } from 'react-router-dom';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import {
+  Home, Gavel, FileSignature, FileText, ShieldAlert, Package, Inbox, Store, SlidersHorizontal,
+  User, LogOut, Moon, Sun, Menu, X, HandCoins, Users, BadgeCheck, ClipboardCheck, AlertOctagon,
+  BarChart3, ScrollText, Bell, Settings as SettingsIcon
+} from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
-import { Moon, Sun } from 'lucide-react';
 import { db } from '../firebase';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import ChatAssistant from './ChatAssistant';
+import GlobalSearch from './GlobalSearch';
+import { NotificationBell, useNotifications } from './Notifications';
+import { useInvoiceIntake } from '../services/useInvoiceIntake';
+import { can, ROLE_LABELS } from '../security/roles';
 
 export default function Layout() {
   const { isDarkMode, toggleTheme } = useTheme();
-  const { currentUser, userData, logout } = useAuth();
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const dropdownRef = useRef(null);
+  const { currentUser, userData, logout, orgId, role: permRole, profileError, retryProfile } = useAuth();
   const navigate = useNavigate();
-  const [pendingRequestsCount, setPendingRequestsCount] = useState(0);
-  const [pendingReviewCount, setPendingReviewCount] = useState(0);
+  const location = useLocation();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [reviewCount, setReviewCount] = useState(0);
+  const [requestCount, setRequestCount] = useState(0);
+  const [approvalCount, setApprovalCount] = useState(0);
+  const role = userData?.role;
+  const { items: notifications } = useNotifications();
+  const unread = (notifications || []).filter(n => !n.read).length;
 
-  // Buyers: count invoices the AI flagged that still need a decision
+  // Any signed-in buyer team member validates newly arrived invoices in the background
+  useInvoiceIntake(orgId, role !== 'supplier' && can.reviewRisk(permRole));
+
+  // Close the mobile menu whenever the page changes
+  useEffect(() => { setMenuOpen(false); }, [location.pathname]);
+
+  // Live badge counts: flagged invoices (buyer) and new direct requests (supplier)
   useEffect(() => {
-    if (!currentUser || userData?.role !== 'consumer') return;
-    const q = query(collection(db, 'bills'), where('consumerId', '==', currentUser.uid));
-    return onSnapshot(q, (snapshot) => {
-      setPendingReviewCount(snapshot.docs.filter(d => d.data().reviewStatus === 'pending_review').length);
-    });
-  }, [currentUser, userData]);
+    if (!currentUser || !role) return;
+    const q = role === 'consumer'
+      ? query(collection(db, 'bills'), where('consumerId', '==', orgId))
+      : query(collection(db, 'requests'), where('supplierId', '==', currentUser.uid), where('status', '==', 'pending'));
+    return onSnapshot(q, (snap) => {
+      if (role === 'consumer') {
+        setReviewCount(snap.docs.filter(d => d.data().reviewStatus === 'pending_review').length);
+        setApprovalCount(snap.docs.filter(d => d.data().approval?.status === 'pending' && can.approveStep(permRole, d.data().approval.nextRole)).length);
+      } else setRequestCount(snap.size);
+    }, () => {});
+  }, [currentUser, role, orgId, permRole]);
 
-  const navItems = userData?.role === 'consumer'
+  // Navigation by role: suppliers see their own work; buyer team members see sections their role allows
+  const sections = role === 'supplier'
     ? [
-        { to: '/tenders', label: 'Tenders' },
-        { to: '/contracts', label: 'Contracts' },
-        { to: '/my-orders', label: 'Invoices' },
-        { to: '/risk', label: 'Risk Center', count: pendingReviewCount }
+        { items: [
+          { to: '/', label: 'Dashboard', icon: Home, end: true },
+          { to: '/tenders', label: 'Tenders', icon: Gavel },
+          { to: '/bids', label: 'My bids', icon: HandCoins },
+          { to: '/contracts', label: 'Contracts', icon: FileSignature },
+          { to: '/my-invoices', label: 'Invoices', icon: FileText },
+          { to: '/verification', label: 'Verification', icon: BadgeCheck }
+        ] },
+        { title: 'Direct sales', items: [
+          { to: '/my-products', label: 'My catalogue', icon: Package },
+          { to: '/requests', label: 'Direct requests', icon: Inbox, count: requestCount }
+        ] }
       ]
-    : userData?.role === 'supplier'
-    ? [
-        { to: '/tenders', label: 'Tenders' },
-        { to: '/contracts', label: 'Contracts' }
-      ]
-    : [];
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    function handleClickOutside(event) {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
-        setDropdownOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  // Listen for pending requests for suppliers
-  useEffect(() => {
-    let unsubscribe;
-    if (userData && userData.role === 'supplier' && currentUser) {
-      const q = query(
-        collection(db, 'requests'), 
-        where('supplierId', '==', currentUser.uid),
-        where('status', '==', 'pending')
-      );
-      unsubscribe = onSnapshot(q, (snapshot) => {
-        setPendingRequestsCount(snapshot.size);
-      });
-    }
-    return () => {
-      if (unsubscribe) unsubscribe();
-    };
-  }, [userData, currentUser]);
+    : [
+        { items: [
+          { to: '/', label: 'Dashboard', icon: Home, end: true },
+          { to: '/tenders', label: 'Tenders', icon: Gavel },
+          { to: '/bids', label: 'Bids', icon: HandCoins },
+          { to: '/contracts', label: 'Contracts', icon: FileSignature },
+          { to: '/my-orders', label: 'Invoices', icon: FileText },
+          { to: '/approvals', label: 'Approvals', icon: ClipboardCheck, count: approvalCount }
+        ] },
+        { title: 'Suppliers & risk', items: [
+          { to: '/suppliers', label: 'Suppliers', icon: Users, end: true },
+          { to: '/suppliers?tab=verification', label: 'Supplier verification', icon: BadgeCheck, match: 'tab=verification' },
+          { to: '/risk', label: 'Risk Center', icon: ShieldAlert, count: reviewCount },
+          { to: '/fraud', label: 'Fraud detection', icon: AlertOctagon }
+        ] },
+        { title: 'Insights', items: [
+          { to: '/analytics', label: 'Analytics', icon: BarChart3 },
+          can.viewAudit(permRole) && { to: '/audit', label: 'Audit trail', icon: ScrollText },
+          { to: '/notifications', label: 'Notifications', icon: Bell, count: unread }
+        ].filter(Boolean) },
+        { title: 'Direct buying', items: [
+          { to: '/search', label: 'Catalogue', icon: Store },
+          { to: '/company-limits', label: 'Spending limits', icon: SlidersHorizontal },
+          can.manageTeam(permRole) && { to: '/settings', label: 'Team & settings', icon: SettingsIcon }
+        ].filter(Boolean) }
+      ];
 
   const handleLogout = async () => {
     try {
       await logout();
       navigate('/login');
     } catch (err) {
-      console.error("Failed to log out", err);
+      console.error('Failed to log out', err);
     }
   };
 
-  const getInitials = () => {
-    if (userData && userData.companyName) {
-      return userData.companyName.substring(0, 2).toUpperCase();
-    }
-    if (currentUser && currentUser.email) {
-      return currentUser.email.substring(0, 2).toUpperCase();
-    }
-    return "US";
-  };
+  const name = userData?.companyName || currentUser?.email || '';
+  const initials = name.substring(0, 2).toUpperCase() || 'US';
+
+  // Links that differ only by query string (Suppliers vs. verification tab) need an exact match
+  const isOn = (item, isActive) => (item.match ? location.search.includes(item.match)
+    : isActive && !(item.to === '/suppliers' && location.search.includes('tab=verification')));
+  const NavItem = ({ item }) => (
+    <NavLink to={item.to} end={item.end} className={({ isActive }) => `side-link${isOn(item, isActive) ? ' active' : ''}`}>
+      <item.icon size={17} />
+      <span>{item.label}</span>
+      {item.count > 0 && <span className="side-count">{item.count}</span>}
+    </NavLink>
+  );
+
+  // Never show the app without knowing the user's role
+  if (currentUser && !userData) {
+    return (
+      <div className="account-gate">
+        {profileError ? (
+          <>
+            <p>{profileError}</p>
+            <div className="form-actions" style={{ justifyContent: 'center' }}>
+              <button className="btn-secondary" onClick={handleLogout}>Sign out</button>
+              <button className="btn-primary" onClick={retryProfile}>Try again</button>
+            </div>
+          </>
+        ) : (<><span className="spinner" /> Loading your account…</>)}
+      </div>
+    );
+  }
 
   return (
-    <div className="app-container">
-      <nav className="navbar">
-        <Link to="/" className="navbar-brand">
-          Tether
-        </Link>
-        {currentUser && navItems.length > 0 && (
-          <div className="nav-links">
-            {navItems.map(item => (
-              <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-                {item.label}
-                {item.count > 0 && <span className="nav-count">{item.count}</span>}
-              </NavLink>
-            ))}
-          </div>
-        )}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
-          
-          <button 
-            className="theme-toggle" 
-            onClick={toggleTheme} 
-            aria-label="Toggle theme"
-            title={`Switch to ${isDarkMode ? 'light' : 'dark'} mode`}
-          >
-            {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
-          </button>
-
-          {currentUser && (
-            <div className="profile-section" ref={dropdownRef}>
-              
-              <button 
-                className="avatar-btn" title="Your account: profile and sign out" 
-                onClick={() => setDropdownOpen(!dropdownOpen)}
-              >
-                {getInitials()}
-              </button>
-
-              {dropdownOpen && (
-                <div className="dropdown-menu">
-                  <button 
-                    className="dropdown-item" 
-                    onClick={() => { setDropdownOpen(false); navigate('/profile'); }}
-                  >
-                    Profile
-                  </button>
-                  
-
-                  {userData && userData.role === 'supplier' && (
-                    <>
-                      <button 
-                        className="dropdown-item" 
-                        onClick={() => { setDropdownOpen(false); navigate('/my-products'); }}
-                      >
-                        My Products
-                      </button>
-                      <button 
-                        className="dropdown-item" 
-                        onClick={() => { setDropdownOpen(false); navigate('/requests'); }}
-                        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-                      >
-                        <span>Requests</span>
-                        {pendingRequestsCount > 0 && (
-                          <span style={{ 
-                            backgroundColor: 'var(--primary-color)', 
-                            color: 'var(--primary-text)', 
-                            borderRadius: '50%', 
-                            width: '1.25rem', 
-                            height: '1.25rem', 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            justifyContent: 'center',
-                            fontSize: '0.75rem',
-                            fontWeight: '600'
-                          }}>
-                            {pendingRequestsCount}
-                          </span>
-                        )}
-                      </button>
-                    </>
-                  )}
-
-                  {userData && userData.role === 'consumer' && (
-                    <>
-                      <button 
-                        className="dropdown-item" 
-                        onClick={() => { setDropdownOpen(false); navigate('/search'); }}
-                        style={{ fontWeight: '600' }}
-                      >
-                        Search Products
-                      </button>
-                      <button 
-                        className="dropdown-item" 
-                        onClick={() => { setDropdownOpen(false); navigate('/company-limits'); }}
-                      >
-                        Company Limits
-                      </button>
-                      <button 
-                        className="dropdown-item" 
-                        onClick={() => { setDropdownOpen(false); navigate('/my-orders'); }}
-                      >
-                        My Orders
-                      </button>
-                      <button 
-                        className="dropdown-item" 
-                        onClick={() => { setDropdownOpen(false); navigate('/payments'); }}
-                      >
-                        Payments
-                      </button>
-                    </>
-                  )}
-
-                  <button 
-                    className="dropdown-item" 
-                    onClick={handleLogout}
-                    style={{ color: 'var(--error-color)' }}
-                  >
-                    Sign Out
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
+    <div className="shell">
+      <aside className={`sidebar${menuOpen ? ' open' : ''}`}>
+        <div className="side-top">
+          <Link to="/" className="brand">Tether</Link>
+          <button className="icon-btn side-close" onClick={() => setMenuOpen(false)} aria-label="Close menu"><X size={18} /></button>
         </div>
-      </nav>
-      
-      <main className="main-content">
-        <Outlet />
-      </main>
+
+        <nav className="side-nav">
+          {sections.map((sec, i) => (
+            <React.Fragment key={i}>
+              {sec.title && <div className="side-section">{sec.title}</div>}
+              {sec.items.map(item => <NavItem key={item.to} item={item} />)}
+            </React.Fragment>
+          ))}
+        </nav>
+
+        <div className="side-bottom">
+          <NavLink to="/profile" className={({ isActive }) => `side-account${isActive ? ' active' : ''}`}>
+            <span className="avatar">{initials}</span>
+            <span className="side-account-text">
+              <span className="side-account-name">{name}</span>
+              <span className="side-account-role">{ROLE_LABELS[permRole] || 'Buyer'}</span>
+            </span>
+            <User size={15} />
+          </NavLink>
+          <div className="side-actions">
+            <button className="side-action" onClick={toggleTheme}>
+              {isDarkMode ? <Sun size={15} /> : <Moon size={15} />}
+              {isDarkMode ? 'Light mode' : 'Dark mode'}
+            </button>
+            <button className="side-action danger" onClick={handleLogout}>
+              <LogOut size={15} /> Sign out
+            </button>
+          </div>
+        </div>
+      </aside>
+      {menuOpen && <div className="scrim" onClick={() => setMenuOpen(false)} />}
+
+      <div className="shell-main">
+        <header className="topbar">
+          <button className="icon-btn menu-btn" onClick={() => setMenuOpen(true)} aria-label="Open menu"><Menu size={19} /></button>
+          <GlobalSearch />
+          <NotificationBell />
+        </header>
+        <main className="main-content">
+          <Outlet />
+        </main>
+      </div>
 
       <ChatAssistant />
     </div>

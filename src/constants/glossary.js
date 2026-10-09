@@ -51,6 +51,7 @@ export const FLAG_GLOSSARY = {
   price_too_high: 'Much more expensive than what this product usually costs.',
   over_budget: 'This bid is above the maximum price you set.',
   partial_quantity: 'This supplier cannot deliver the full amount you asked for.',
+  weak_proposal: 'The AI read the proposal and found something worth questioning, such as claims you cannot check or a seller who is not the official supplier.',
   supplier_history: 'Many of this supplier\'s past bills were flagged, so be careful.'
 };
 

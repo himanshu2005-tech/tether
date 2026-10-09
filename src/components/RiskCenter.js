@@ -5,7 +5,8 @@ import { db } from '../firebase';
 import { collection, query, where, onSnapshot, doc, getDoc, updateDoc } from 'firebase/firestore';
 import { ShieldCheck, ShieldAlert, IndianRupee, ScanSearch } from 'lucide-react';
 import { analyzeInvoice } from '../api';
-import { PageHeader, RiskBadge, FlagList, InfoTip } from './Guide';
+import { PageHeader, RiskBadge, FlagList, InfoTip, ReasonDialog } from './Guide';
+import { logAudit } from '../services/audit';
 
 const FLAG_LABELS = {
   price_exceeded: 'Price above contract',
@@ -21,7 +22,7 @@ const FLAG_LABELS = {
 const money = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 
 export default function RiskCenter() {
-  const { currentUser } = useAuth();
+  const { currentUser, orgId } = useAuth();
   const navigate = useNavigate();
   const [bills, setBills] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -32,7 +33,7 @@ export default function RiskCenter() {
 
   useEffect(() => {
     if (!currentUser) return;
-    const q = query(collection(db, 'bills'), where('consumerId', '==', currentUser.uid));
+    const q = query(collection(db, 'bills'), where('consumerId', '==', orgId));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
       list.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
@@ -40,7 +41,7 @@ export default function RiskCenter() {
       setLoading(false);
     });
     return unsubscribe;
-  }, [currentUser]);
+  }, [currentUser, orgId]);
 
   const stats = useMemo(() => {
     const analyzed = bills.filter(b => b.analysis);
@@ -84,14 +85,25 @@ export default function RiskCenter() {
     });
   }, [stats.suppliers, supplierNames]);
 
-  const decide = async (bill, decision) => {
+  const [rejecting, setRejecting] = useState(null);
+
+  // Approving here clears the AI flags so the invoice can continue through its approval chain;
+  // rejecting stops it. Both are recorded with who decided and why.
+  const decide = async (bill, decision, reason = null) => {
     setBusy(prev => ({ ...prev, [bill.id]: true }));
     try {
       await updateDoc(doc(db, 'bills', bill.id), decision === 'approve'
-        ? { reviewStatus: 'approved', reviewedAt: new Date().toISOString() }
-        : { reviewStatus: 'rejected', status: 'rejected', reviewedAt: new Date().toISOString() });
+        ? { reviewStatus: 'approved', reviewedAt: new Date().toISOString(), reviewedBy: currentUser.uid }
+        : { reviewStatus: 'rejected', status: 'rejected', reviewedAt: new Date().toISOString(), reviewedBy: currentUser.uid, rejectReason: reason });
+      await logAudit({
+        action: decision === 'approve' ? 'RISK_REVIEW_DECISION' : 'INVOICE_REJECTED', entityType: 'invoice', entityId: bill.id,
+        entityLabel: `#${bill.invoiceNumber || bill.id.slice(0, 8).toUpperCase()}`,
+        previous: { reviewStatus: bill.reviewStatus, aiLevel: bill.analysis?.level }, next: { reviewStatus: decision === 'approve' ? 'approved' : 'rejected' },
+        reason, meta: { amount: bill.amount, flags: (bill.analysis?.flags || []).map(f => f.type) }
+      });
     } catch (err) {
       alert('Could not save decision: ' + err.message);
+      if (decision === 'reject') throw err;
     }
     setBusy(prev => ({ ...prev, [bill.id]: false }));
   };
@@ -176,8 +188,8 @@ export default function RiskCenter() {
             {queue.map(b => (
               <InvoiceCard key={b.id} bill={b} supplierName={supplierNames[b.supplierId]}>
                 <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem', flexWrap: 'wrap' }}>
-                  <button className="btn-primary" style={{ marginTop: 0 }} disabled={busy[b.id]} onClick={() => decide(b, 'approve')}>Approve for payment</button>
-                  <button className="btn-danger" disabled={busy[b.id]} onClick={() => decide(b, 'reject')}>Reject invoice</button>
+                  <button className="btn-primary" style={{ marginTop: 0 }} disabled={busy[b.id]} onClick={() => decide(b, 'approve')}>Clear flags</button>
+                  <button className="btn-danger" disabled={busy[b.id]} onClick={() => setRejecting(b)}>Reject invoice</button>
                 </div>
               </InvoiceCard>
             ))}
@@ -248,6 +260,11 @@ export default function RiskCenter() {
             ))}
           </div>
         )
+      )}
+      {rejecting && (
+        <ReasonDialog title="Reject invoice" confirmLabel="Reject invoice"
+          message="The invoice will be blocked from payment. The reason is recorded in the audit trail."
+          onConfirm={(reason) => decide(rejecting, 'reject', reason)} onClose={() => setRejecting(null)} />
       )}
     </div>
   );

@@ -22,6 +22,16 @@ import Contracts from './components/Contracts';
 import RiskCenter from './components/RiskCenter';
 
 import AuthLayout from './components/AuthLayout';
+import Approvals from './components/Approvals';
+import Bids from './components/Bids';
+import Suppliers from './components/Suppliers';
+import Verification from './components/Verification';
+import Fraud from './components/Fraud';
+import Analytics from './components/Analytics';
+import AuditTrail from './components/AuditTrail';
+import Settings from './components/Settings';
+import SupplierInvoices from './components/SupplierInvoices';
+import NotificationsPage from './components/Notifications';
 
 function App() {
   return (
@@ -135,6 +145,16 @@ function App() {
                   </ProtectedRoute>
                 }
               />
+              <Route path="/approvals" element={<ProtectedRoute><Approvals /></ProtectedRoute>} />
+              <Route path="/bids" element={<ProtectedRoute><Bids /></ProtectedRoute>} />
+              <Route path="/suppliers" element={<ProtectedRoute><Suppliers /></ProtectedRoute>} />
+              <Route path="/verification" element={<ProtectedRoute><Verification /></ProtectedRoute>} />
+              <Route path="/fraud" element={<ProtectedRoute><Fraud /></ProtectedRoute>} />
+              <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
+              <Route path="/audit" element={<ProtectedRoute><AuditTrail /></ProtectedRoute>} />
+              <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+              <Route path="/my-invoices" element={<ProtectedRoute><SupplierInvoices /></ProtectedRoute>} />
+              <Route path="/notifications" element={<ProtectedRoute><NotificationsPage /></ProtectedRoute>} />
             </Route>
 
             {/* Auth Routes */}

@@ -2,9 +2,16 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { analyzeTenderBids, extractTerms, getBidGuidance } from '../api';
-import { RiskBadge, FlagList, AiTag, InfoTip } from './Guide';
+import { RiskBadge, FlagList, AiTag } from './Guide';
+import BidEvaluation from './BidEvaluation';
+import PriceBenchmark from './PriceBenchmark';
 import { Sparkles } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { inPlayArea, tenderIndustry, industryName } from '../constants/products';
 import { db } from '../firebase';
+import { logAudit } from '../services/audit';
+import { notify } from '../services/notify';
+import { can } from '../security/roles';
 import {
   doc, onSnapshot, collection, query, where, addDoc, updateDoc,
   increment, serverTimestamp, writeBatch
@@ -13,7 +20,7 @@ import {
 export default function TenderDetail() {
   const { tenderId } = useParams();
   const navigate = useNavigate();
-  const { currentUser, userData } = useAuth();
+  const { currentUser, userData, orgId, role } = useAuth();
   const [tender, setTender] = useState(null);
   const [bids, setBids] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -29,7 +36,7 @@ export default function TenderDetail() {
   const daysRef = useRef();
   const proposalRef = useRef();
 
-  const isOwner = tender && currentUser && tender.buyerId === currentUser.uid;
+  const isOwner = tender && currentUser && tender.buyerId === orgId;
   const isSupplier = userData?.role === 'supplier';
   const myBid = bids.find(b => b.supplierId === currentUser?.uid);
 
@@ -45,7 +52,8 @@ export default function TenderDetail() {
     if (!tender || !currentUser) return;
     // The buyer sees every bid; a supplier sees only their own
     const q = isOwner
-      ? query(collection(db, 'bids'), where('tenderId', '==', tenderId))
+      // The organisation filter is required by the security rules (queries must prove access)
+      ? query(collection(db, 'bids'), where('tenderId', '==', tenderId), where('buyerId', '==', orgId))
       : query(collection(db, 'bids'), where('tenderId', '==', tenderId), where('supplierId', '==', currentUser.uid));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -53,10 +61,11 @@ export default function TenderDetail() {
       setBids(list);
     });
     return unsubscribe;
-  }, [tender, tenderId, isOwner, currentUser]);
+  }, [tender, tenderId, isOwner, currentUser, orgId]);
 
   // Suppliers get AI price guidance before bidding
-  const canBid = isSupplier && !myBid && tender?.status === 'open';
+  const outsidePlayArea = isSupplier && tender && !inPlayArea(tender, userData);
+  const canBid = isSupplier && !myBid && tender?.status === 'open' && !outsidePlayArea;
   useEffect(() => {
     if (!canBid || guidance) return;
     getBidGuidance(tender, userData?.description || '').then(setGuidance).catch(() => setGuidance({ unavailable: true }));
@@ -75,6 +84,18 @@ export default function TenderDetail() {
       await updateDoc(doc(db, 'tenders', tenderId), {
         aiAnalysis: { ...result, bidCount: bids.length, analyzedAt: new Date().toISOString() }
       });
+      const suspicious = result.bids.filter(r => r.flags.some(f => ['linked_bidders', 'similar_proposals', 'buyer_conflict'].includes(f.type)));
+      await logAudit({
+        action: 'BID_EVALUATED', entityType: 'tender', entityId: tenderId, entityLabel: tender.title,
+        next: { bids: bids.length, recommended: result.bids.find(r => r.bidId === result.recommendedBidId)?.supplierName || null, flagged: suspicious.length }
+      });
+      if (suspicious.length || result.tenderFlags.length) {
+        await notify({ orgId, roles: ['procurement_manager', 'admin'] }, {
+          kind: 'suspicious_bidding', severity: 'high', title: 'Suspicious bidding pattern',
+          message: `"${tender.title}": ${[...result.tenderFlags, ...suspicious.flatMap(r => r.flags)].filter(f => ['linked_bidders', 'similar_proposals', 'buyer_conflict', 'price_clustering'].includes(f.type)).map(f => f.title.toLowerCase()).filter((v, i, a) => a.indexOf(v) === i).join(', ')}.`,
+          entityType: 'tender', entityId: tenderId, link: `/tenders/${tenderId}`
+        });
+      }
     } catch (err) {
       setAiError(err.message);
     }
@@ -105,6 +126,7 @@ export default function TenderDetail() {
     try {
       await addDoc(collection(db, 'bids'), {
         tenderId: tenderId,
+        tenderTitle: tender.title,
         buyerId: tender.buyerId,
         supplierId: currentUser.uid,
         supplierName: userData?.companyName || currentUser.email,
@@ -117,6 +139,16 @@ export default function TenderDetail() {
         createdAt: serverTimestamp()
       });
       await updateDoc(doc(db, 'tenders', tenderId), { bidCount: increment(1) });
+      // Bids are part of the buyer's audit trail
+      await logAudit({
+        action: 'BID_SUBMITTED', entityType: 'tender', entityId: tenderId, entityLabel: tender.title, orgId: tender.buyerId,
+        next: { supplier: userData?.companyName || currentUser.email, unitPrice, quantity, deliveryDays }
+      });
+      await notify({ orgId: tender.buyerId, roles: ['procurement_officer', 'procurement_manager', 'admin'] }, {
+        kind: 'new_bid', severity: 'info', title: 'New bid received',
+        message: `${userData?.companyName || 'A supplier'} bid ₹${unitPrice.toLocaleString('en-IN')} per ${tender.unit} on "${tender.title}".`,
+        entityType: 'tender', entityId: tenderId, link: `/tenders/${tenderId}`
+      });
     } catch (err) {
       setError('Failed to place bid: ' + err.message);
     }
@@ -124,10 +156,16 @@ export default function TenderDetail() {
   };
 
   const handleCloseBidding = async () => {
+    if (!window.confirm('Close bidding? Suppliers will no longer be able to submit bids.')) return;
     await updateDoc(doc(db, 'tenders', tenderId), { status: 'closed' });
+    await logAudit({ action: 'TENDER_MODIFIED', entityType: 'tender', entityId: tenderId, entityLabel: tender.title, previous: { status: tender.status }, next: { status: 'closed' } });
   };
 
   const handleAward = async (winningBid) => {
+    if (!can.awardContract(role)) {
+      setError('Only a procurement manager or admin can award contracts.');
+      return;
+    }
     if (!window.confirm(`Award this contract to ${winningBid.supplierName} at ₹${winningBid.unitPrice.toFixed(2)}/${tender.unit}?`)) return;
     setIsSubmitting(true);
     try {
@@ -167,6 +205,17 @@ export default function TenderDetail() {
         batch.update(doc(db, 'bids', b.id), { status: b.id === winningBid.id ? 'awarded' : 'rejected' });
       });
       await batch.commit();
+      await logAudit({
+        action: 'CONTRACT_CREATED', entityType: 'contract', entityId: contractRef.id, entityLabel: tender.title,
+        next: { supplier: winningBid.supplierName, agreedUnitPrice: winningBid.unitPrice, maxQuantity: winningBid.quantity },
+        meta: { tenderId, bidId: winningBid.id, valueScore: analysisFor(winningBid.id)?.valueScore ?? null, recommended: analysis?.recommendedBidId === winningBid.id }
+      });
+      await logAudit({ action: 'TENDER_MODIFIED', entityType: 'tender', entityId: tenderId, entityLabel: tender.title, previous: { status: tender.status }, next: { status: 'awarded' } });
+      await notify({ userIds: [winningBid.supplierId] }, {
+        kind: 'contract_awarded', severity: 'info', title: 'You won a contract',
+        message: `"${tender.title}" was awarded to you at ₹${winningBid.unitPrice.toLocaleString('en-IN')} per ${tender.unit}.`,
+        entityType: 'contract', entityId: contractRef.id, link: '/contracts'
+      });
       navigate('/contracts');
     } catch (err) {
       setError('Failed to award contract: ' + err.message);
@@ -205,6 +254,7 @@ export default function TenderDetail() {
 
       <div className="product-details spec-strip">
         <div className="product-stat"><span className="stat-label">Product</span><span className="stat-value">{tender.productName}</span></div>
+        {tenderIndustry(tender) && <div className="product-stat"><span className="stat-label">Industry</span><span className="stat-value">{industryName(tenderIndustry(tender))}</span></div>}
         <div className="product-stat"><span className="stat-label">Quantity</span><span className="stat-value">{tender.quantity} {tender.unit}</span></div>
         <div className="product-stat"><span className="stat-label">Max unit price</span><span className="stat-value">₹{Number(tender.maxUnitPrice).toFixed(2)}</span></div>
         <div className="product-stat"><span className="stat-label">Bids close</span><span className="stat-value">{tender.bidDeadline}</span></div>
@@ -221,6 +271,13 @@ export default function TenderDetail() {
       {error && <div className="error-message">{error}</div>}
 
       {/* Supplier: place a bid */}
+      {outsidePlayArea && !myBid && (
+        <div className="notice">
+          This tender is for {industryName(tenderIndustry(tender))}, which isn't in your play area, so you can't bid on it.
+          {' '}<Link to="/profile#play-area">Update your play area</Link> if you supply this.
+        </div>
+      )}
+
       {canBid && (
         <div className="form-container">
           <h3 className="section-title">Your bid</h3>
@@ -290,6 +347,12 @@ export default function TenderDetail() {
           {analysis && (
             <>
               <p style={{ marginTop: '0.75rem' }}>{analysis.summary}</p>
+              <div className="eval-method">
+                <b>How bids are scored:</b> each bid gets up to 100 points: <b>55</b> for price (cheapest wins), <b>20</b> for delivery speed
+                and <b>25</b> for low risk. Risk comes from 8 checks, from your price limit to hidden links between companies. Bids put on hold
+                are never recommended.
+                {analysis.singleBid && <> With only one bid, price and delivery can't be compared yet, so its score is high by default. Wait for more bids if you can.</>}
+              </div>
               <FlagList flags={analysis.tenderFlags} />
               {analysis.bidCount !== bids.length && (
                 <p style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>New bids arrived since this analysis. Re-run to include them.</p>
@@ -299,14 +362,16 @@ export default function TenderDetail() {
         </div>
       )}
 
+      {isOwner && <div className="section-gap"><PriceBenchmark tender={tender} bids={bids} /></div>}
+
       {/* Bids list: all bids for the owner, own bid for a supplier */}
       {(isOwner || myBid) && (
         <div>
-          <h3 style={{ fontWeight: '500', marginBottom: '1rem' }}>
+          <h3 className="section-title section-title-lg">
             {isOwner ? `Bids received (${bids.length})` : 'Your bid'}
           </h3>
           {bids.length === 0 ? (
-            <div style={{ padding: '2rem', textAlign: 'center', border: '1px dashed var(--border-color)', color: 'var(--text-secondary)' }}>
+            <div className="empty-state">
               No bids yet.
             </div>
           ) : (
@@ -337,7 +402,7 @@ export default function TenderDetail() {
                   </div>
                   {b.proposal && <p style={{ marginTop: '0.75rem', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{b.proposal}</p>}
                   {ai && <FlagList flags={ai.flags} />}
-                  {ai && <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Value score {ai.valueScore}/100<InfoTip term="valueScore" label="value score" /></div>}
+                  {ai && <BidEvaluation ai={ai} open={recommended || bids.length <= 2} />}
                   {isOwner && tender.status !== 'awarded' && (
                     <button className="btn-primary" disabled={isSubmitting} onClick={() => handleAward(b)} style={{ marginTop: '1rem' }}>
                       Award contract

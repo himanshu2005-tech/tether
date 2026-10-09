@@ -5,8 +5,10 @@ import { ArrowRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../firebase';
 import { getBriefing } from '../api';
+import { inPlayArea } from '../constants/products';
 import { AiTag, InfoTip } from './Guide';
 import GettingStarted from './GettingStarted';
+import ProcurementDashboard from './ProcurementDashboard';
 
 const money = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 
@@ -38,7 +40,7 @@ async function loadBuyerStats(uid) {
   };
 }
 
-async function loadSupplierStats(uid) {
+async function loadSupplierStats(uid, userData) {
   const [openSnap, bidsSnap, contractsSnap, billsSnap] = await Promise.all([
     getDocs(query(collection(db, 'tenders'), where('status', '==', 'open'))),
     getDocs(query(collection(db, 'bids'), where('supplierId', '==', uid))),
@@ -48,8 +50,9 @@ async function loadSupplierStats(uid) {
   const bidTenderIds = new Set(bidsSnap.docs.map(d => d.data().tenderId));
   const bills = billsSnap.docs.map(d => d.data());
   return {
-    openTenders: openSnap.size,
-    newTenders: openSnap.docs.filter(d => !bidTenderIds.has(d.id)).length,
+    // Only tenders in the supplier's play area count
+    openTenders: openSnap.docs.filter(d => inPlayArea(d.data(), userData)).length,
+    newTenders: openSnap.docs.filter(d => inPlayArea(d.data(), userData) && !bidTenderIds.has(d.id)).length,
     bids: bidsSnap.size,
     contracts: contractsSnap.size,
     contractInvoices: bills.filter(b => b.contractId).length,
@@ -82,7 +85,7 @@ function fallbackBriefing(isSupplier, s) {
 }
 
 export default function Home() {
-  const { currentUser, userData } = useAuth();
+  const { currentUser, userData, orgId } = useAuth();
   const navigate = useNavigate();
   const [stats, setStats] = useState(null);
   const [briefing, setBriefing] = useState(null);
@@ -92,14 +95,14 @@ export default function Home() {
 
   useEffect(() => {
     if (!currentUser || !userData?.role) return;
-    (isSupplier ? loadSupplierStats : loadBuyerStats)(currentUser.uid)
+    (isSupplier ? loadSupplierStats : loadBuyerStats)(isSupplier ? currentUser.uid : orgId, userData)
       .then(setStats)
       .catch(err => { console.error(err); setStats({}); });
-  }, [currentUser, userData, isSupplier]);
+  }, [currentUser, userData, isSupplier, orgId]);
 
   // AI briefing, cached for the session so it only regenerates when the numbers change
   useEffect(() => {
-    if (!stats) return;
+    if (!stats || !userData?.role) return;
     const key = `briefing:${currentUser.uid}:${JSON.stringify(stats)}`;
     try {
       const cached = sessionStorage.getItem(key);
@@ -146,24 +149,28 @@ export default function Home() {
         )}
       </section>
 
+      {isSupplier ? (
       <div className="tiles">
-        {tiles.map(t => (
-          // A div rather than a button so the "i" button inside it is valid HTML
-          <div
-            key={t.label}
-            className={`tile${t.alert ? ' tile-alert' : ''}${t.to ? ' tile-link' : ''}`}
-            role={t.to ? 'link' : undefined}
-            tabIndex={t.to ? 0 : undefined}
-            onClick={() => t.to && navigate(t.to)}
-            onKeyDown={e => { if (t.to && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); navigate(t.to); } }}
-          >
-            <span className="tile-value">{t.value ?? '–'}</span>
-            <span className="tile-label">{t.label}{t.term && <InfoTip term={t.term} label={t.label} />}</span>
-          </div>
-        ))}
-      </div>
+          {tiles.map(t => (
+            // A div rather than a button so the "i" button inside it is valid HTML
+            <div
+              key={t.label}
+              className={`tile${t.alert ? ' tile-alert' : ''}${t.to ? ' tile-link' : ''}`}
+              role={t.to ? 'link' : undefined}
+              tabIndex={t.to ? 0 : undefined}
+              onClick={() => t.to && navigate(t.to)}
+              onKeyDown={e => { if (t.to && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); navigate(t.to); } }}
+            >
+              <span className="tile-value">{t.value ?? '–'}</span>
+              <span className="tile-label">{t.label}{t.term && <InfoTip term={t.term} label={t.label} />}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
-      {stats && <GettingStarted role={userData.role} userData={userData} stats={stats} />}
+      {stats && userData?.role && <GettingStarted role={userData.role} userData={userData} stats={stats} />}
+
+      {!isSupplier && <ProcurementDashboard />}
     </div>
   );
 }

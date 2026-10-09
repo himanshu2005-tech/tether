@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { Link, useNavigate } from 'react-router-dom';
+import IndustryPicker from './IndustryPicker';
 
 export default function Register() {
   const emailRef = useRef();
@@ -8,11 +9,13 @@ export default function Register() {
   const passwordConfirmRef = useRef();
   const companyNameRef = useRef();
   const descriptionRef = useRef();
+  const nameRef = useRef();
   
   const { signup } = useAuth();
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [role, setRole] = useState('consumer'); // default role
+  const [industries, setIndustries] = useState([]);
   const navigate = useNavigate();
 
   async function handleSubmit(e) {
@@ -21,15 +24,22 @@ export default function Register() {
     if (passwordRef.current.value !== passwordConfirmRef.current.value) {
       return setError('Passwords do not match');
     }
+    if (role === 'supplier' && industries.length === 0) {
+      return setError('Pick at least one industry you supply, so we can show you the right tenders.');
+    }
 
     try {
       setError('');
       setLoading(true);
       
+      const joining = role === 'team';
       const roleData = {
-        role: role,
-        companyName: companyNameRef.current.value,
-        description: descriptionRef.current.value
+        role: joining ? 'consumer' : role,
+        companyName: joining ? '' : companyNameRef.current.value,
+        description: joining ? '' : descriptionRef.current.value,
+        displayName: nameRef.current.value.trim(),
+        ...(joining ? { joining: true } : {}),
+        ...(role === 'supplier' ? { industries } : {})
       };
 
       await signup(emailRef.current.value, passwordRef.current.value, roleData);
@@ -45,7 +55,7 @@ export default function Register() {
     <div className="auth-card">
       <div className="auth-header">
         <h2 className="auth-title">Create Account</h2>
-        <p className="auth-subtitle">Join us to start tethering</p>
+        <p className="auth-subtitle">Set up your company in a minute.</p>
       </div>
       
       {error && <div className="error-message">{error}</div>}
@@ -58,13 +68,31 @@ export default function Register() {
             className="form-input" 
             value={role} 
             onChange={(e) => setRole(e.target.value)}
-            style={{ appearance: 'none', cursor: 'pointer' }}
           >
-            <option value="consumer">Consumer</option>
-            <option value="supplier">Supplier</option>
+            <option value="consumer">Buyer: I post tenders and pay invoices</option>
+            <option value="supplier">Supplier: I bid on tenders and send invoices</option>
+            <option value="team">Team member: my company admin invited me</option>
           </select>
         </div>
 
+        {role === 'supplier' && (
+          <div className="form-group">
+            <label className="form-label">Your play area</label>
+            <p className="form-help">Choose the industries you supply. You'll only see tenders for products in these industries. You can change this later in Profile.</p>
+            <IndustryPicker value={industries} onChange={setIndustries} />
+          </div>
+        )}
+
+        <div className="form-group">
+          <label className="form-label" htmlFor="displayName">Your name</label>
+          <input type="text" id="displayName" className="form-input" ref={nameRef} required placeholder="Priya Sharma" />
+        </div>
+
+        {role === 'team' && (
+          <p className="form-help">Use the exact email address your admin invited. You'll join their company with the role they chose, so there's no company name to fill in.</p>
+        )}
+
+        {role !== 'team' && <>
         <div className="form-group">
           <label className="form-label" htmlFor="companyName">Company Name</label>
           <input 
@@ -88,6 +116,7 @@ export default function Register() {
             placeholder="What does your company do?"
           />
         </div>
+        </>}
 
         <div className="form-group">
           <label className="form-label" htmlFor="email">Email</label>
@@ -126,7 +155,7 @@ export default function Register() {
         </div>
         
         <button disabled={loading} className="btn-primary" type="submit">
-          {loading ? <span className="spinner"></span> : 'Sign Up'}
+          {loading ? <span className="spinner"></span> : 'Create account'}
         </button>
       </form>
       
